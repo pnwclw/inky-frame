@@ -57,7 +57,7 @@ from pathlib import Path
 from PIL import Image
 
 from .config import Settings
-from .dithering import default_crop, rotated_size, working_canvas
+from .dithering import default_crop, normalise_angle, rotated_size, working_canvas
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +70,6 @@ MEDIA_TYPES = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 PHOTO_KINDS = ("original", "thumb")
 RENDER_KINDS = ("render", "thumb")
-ROTATIONS = (0, 90, 180, 270)
 
 
 @dataclass
@@ -81,7 +80,7 @@ class RenderEntry:
     key: str
     created_at: float
     fit: str  # the preset the crop came from: cover | contain | custom
-    rotate: int
+    rotate: float  # degrees clockwise; any angle, not just the quarter turns
     orientation: str
     dither: str
     panel: str
@@ -155,7 +154,7 @@ def _new_id(sha256: str, when: float) -> str:
 def render_key(
     *,
     crop: list[float],
-    rotate: int,
+    rotate: float,
     orientation: str,
     dither: str,
     resolution: list[int] | tuple,
@@ -164,9 +163,15 @@ def render_key(
     it, because two presets can land on the same rectangle. Rounded to whole pixels so
     a drag that ends a hundredth of a pixel away doesn't make a second render.
     Resolution is in there on purpose: after a panel swap the old render is the wrong
-    size and must not be reused."""
+    size and must not be reused.
+
+    The angle is formatted with `:g`, which prints a whole number of degrees without a
+    decimal point — so every key minted back when rotation was limited to the quarter
+    turns still resolves to the same hash, and the renders already on disk stay usable.
+    """
     box = "x".join(str(round(v)) for v in (crop or [0, 0, 0, 0]))
-    raw = f"{box}|{int(rotate) % 360}|{orientation}|{dither.upper()}|{tuple(resolution)}"
+    angle = normalise_angle(rotate)
+    raw = f"{box}|{angle:g}|{orientation}|{dither.upper()}|{tuple(resolution)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
 
@@ -548,7 +553,7 @@ class PhotoLibrary:
         *,
         fit: str,
         crop: list[float],
-        rotate: int,
+        rotate: float,
         orientation: str,
         dither: str,
         shown: bool = False,

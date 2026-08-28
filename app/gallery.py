@@ -42,8 +42,12 @@ PAGE = r"""<!doctype html>
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   /* Dragging an <img> hands the browser the image as a file; the page's own drop
-     handler then treats it as an upload. Nothing here is meant to be dragged out. */
-  img { -webkit-user-drag: none; user-select: none; }
+     handler then treats it as an upload. Nothing here is meant to be dragged out.
+     -webkit-touch-callout is the other half: without it iOS answers the press-and-hold
+     compare gesture with its own "Save Image / Copy" sheet, over the thing you are
+     trying to look at. */
+  img { -webkit-user-drag: none; -webkit-user-select: none; user-select: none;
+        -webkit-touch-callout: none; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -57,6 +61,10 @@ PAGE = r"""<!doctype html>
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff;
                  font-weight: 600; }
   .btn.danger { color: var(--danger); }
+  /* A destructive confirmation is still the primary button — it goes red, not blue
+     with red text on it. */
+  .btn.primary.danger { background: var(--danger); border-color: var(--danger);
+                        color: #fff; }
   .btn:disabled { opacity: .45; cursor: default; }
 
   /* ---- now-showing strip ------------------------------------------------ */
@@ -133,7 +141,15 @@ PAGE = r"""<!doctype html>
                border-radius: 6px; }
   .sheet-foot { border-top: 1px solid var(--line); padding: .6rem 1rem
                 calc(.6rem + env(safe-area-inset-bottom)); display: grid; gap: .55rem; }
-  .strip { display: flex; gap: .4rem; overflow-x: auto; padding-bottom: .15rem; }
+  /* Both grids, both min-width:0. The render strip scrolls sideways, but only while
+     it is a GRID ITEM (whose automatic minimum size an overflow:auto box takes to 0);
+     wrapped in a plain block it would hand its full min-content width upward and shove
+     the Show button off the screen. */
+  #foot-view, #foot-crop { display: grid; gap: .55rem; min-width: 0; }
+  /* ...and an id selector outranks the UA's `[hidden] { display: none }`, so say it. */
+  #foot-view[hidden], #foot-crop[hidden] { display: none; }
+  .strip { display: flex; gap: .4rem; overflow-x: auto; padding-bottom: .15rem;
+           min-width: 0; }
   .strip button { flex: none; border: 2px solid transparent; border-radius: 8px;
                   padding: 0; background: var(--tile); width: 62px; aspect-ratio: 4/3;
                   overflow: hidden; }
@@ -176,16 +192,58 @@ PAGE = r"""<!doctype html>
   .rot { position: absolute; transform-origin: 0 0; will-change: transform; }
   .rot img { position: absolute; max-width: none; }
   .frame { position: absolute; border: 2px solid #fff; border-radius: 2px;
-           box-shadow: 0 0 0 9999px rgba(0,0,0,.62); pointer-events: none; }
-  .frame::before, .frame::after { content: ""; position: absolute; inset: 0;
-           border: 0 solid rgba(255,255,255,.35); pointer-events: none; }
-  .frame::before { border-left-width: 1px; border-right-width: 1px;
-                   margin: 0 33.33%; }
-  .frame::after { border-top-width: 1px; border-bottom-width: 1px;
-                  margin: 33.33% 0; }
+           box-shadow: 0 0 0 9999px rgba(0,0,0,.62),
+                       inset 0 0 0 1px rgba(0,0,0,.35); pointer-events: none; }
+  /* Rule-of-thirds, as two elements rather than pseudo-element margins: a PERCENTAGE
+     MARGIN RESOLVES AGAINST THE WIDTH ON EVERY SIDE, so `margin: 33.33% 0` put the
+     horizontal lines at 44%/56% of a 4:3 frame instead of at the thirds. Percentage
+     top/bottom offsets resolve against the height, which is what this needs. */
+  /* A white hairline vanishes on a pale photo and a dark one vanishes on a dark
+     photo, so every guide is white with a dark halo under it. */
+  .frame i { position: absolute; display: block; pointer-events: none;
+             border: 0 solid rgba(255,255,255,.75);
+             filter: drop-shadow(0 0 1px rgba(0,0,0,.65)); }
+  .frame i.v { top: 0; bottom: 0; left: 33.3333%; right: 33.3333%;
+               border-left-width: 1px; border-right-width: 1px; }
+  .frame i.h { left: 0; right: 0; top: 33.3333%; bottom: 33.3333%;
+               border-top-width: 1px; border-bottom-width: 1px; }
+  /* A finer 9x9 while straightening: thirds are for composing, this is for lining a
+     horizon up against something. */
+  .frame u { position: absolute; inset: 0; opacity: 0; pointer-events: none;
+             transition: opacity .15s;
+             filter: drop-shadow(0 0 1px rgba(0,0,0,.6));
+             background-image: linear-gradient(90deg, rgba(255,255,255,.55) 1px,
+                                               transparent 1px),
+                               linear-gradient(rgba(255,255,255,.55) 1px,
+                                               transparent 1px);
+             background-size: 11.1111% 100%, 100% 11.1111%; }
+  body.rotating .frame u { opacity: 1; }
   .hint { position: absolute; left: 50%; bottom: .5rem; transform: translateX(-50%);
-          background: rgba(0,0,0,.55); color: #fff; font-size: .72rem;
-          padding: .15rem .55rem; border-radius: 999px; pointer-events: none; }
+          background: rgba(0,0,0,.55); color: #fff; font-size: .72rem; max-width: 92%;
+          padding: .15rem .55rem; border-radius: 999px; pointer-events: none;
+          white-space: nowrap; transition: background .15s; }
+  .hint.snap { background: var(--accent); font-weight: 600; }
+
+  /* ---- straighten dial --------------------------------------------------- */
+  /* A ruler that the photo hangs off: drag it and the ticks follow your finger, so
+     the picture turns the other way. Detents every 45 deg (§ snapAngle). */
+  .dial { position: relative; height: 2.5rem; overflow: hidden; touch-action: none;
+          cursor: ew-resize; border: 1px solid var(--line); border-radius: 10px;
+          background: var(--card);
+          -webkit-user-select: none; user-select: none; }
+  .dial .ticks { position: absolute; left: 50%; top: 0; bottom: 0; width: 0;
+                 will-change: transform; }
+  .dial .ticks i { position: absolute; top: 1.55rem; bottom: .35rem; width: 1px;
+                   background: var(--muted); opacity: .5; }
+  .dial .ticks i.maj { top: 1.1rem; opacity: 1; background: var(--fg); }
+  .dial .ticks i.maj b { position: absolute; left: 50%; top: -1.05rem; font-size: .6rem;
+                         font-weight: 500; color: var(--muted); line-height: 1;
+                         transform: translateX(-50%); }
+  .dial .needle { position: absolute; left: 50%; top: .2rem; bottom: .2rem; width: 2px;
+                  margin-left: -1px; background: var(--accent); border-radius: 2px; }
+  .deg { font-variant-numeric: tabular-nums; font-size: .82rem; color: var(--muted);
+         min-width: 3.6rem; text-align: center; }
+  .deg.snap { color: var(--accent); font-weight: 600; }
 
   /* ---- loading ----------------------------------------------------------- */
   .spin { width: 1.6rem; height: 1.6rem; border-radius: 50%;
@@ -217,6 +275,31 @@ PAGE = r"""<!doctype html>
   .dopt.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .dopt b { font-weight: 620; }
   .dopt span { grid-column: 1 / -1; color: var(--muted); font-size: .82rem; }
+  /* An inline <svg> with no width/height lays out at 300x150 and fills black. The tick
+     on the selected row did exactly that and shoved the sheet apart. */
+  .dopt svg { width: 1.15rem; height: 1.15rem; stroke: var(--accent); fill: none;
+              stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+              align-self: center; }
+  .dopt i { display: block; width: 1.15rem; }
+  #dpick .head { display: flex; align-items: center; gap: .5rem; margin: .2rem 0 .7rem; }
+  #dpick .head h3 { margin: 0; font-size: 1rem; flex: 1; }
+
+  /* ---- ask / confirm ----------------------------------------------------- */
+  /* Not window.prompt(): Chrome ignores prompt/confirm inside a CROSS-ORIGIN IFRAME,
+     which is exactly how Home Assistant embeds this page in the sidebar. Renaming and
+     deleting silently did nothing there. */
+  #ask { position: fixed; inset: 0; z-index: 18; display: none;
+         background: color-mix(in srgb, var(--bg) 62%, transparent);
+         place-items: center; padding: 1rem; }
+  #ask.open { display: grid; }
+  #ask form { background: var(--sheet); border: 1px solid var(--line);
+              border-radius: 14px; padding: 1rem; width: min(24rem, 100%);
+              display: grid; gap: .7rem; box-shadow: 0 18px 50px rgba(0,0,0,.25); }
+  #ask h3 { margin: 0; font-size: 1rem; font-weight: 620; }
+  #ask input { font: inherit; color: var(--fg); background: var(--card); width: 100%;
+               border: 1px solid var(--line); border-radius: 9px; padding: .5rem .6rem; }
+  #ask input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #ask .row { display: flex; gap: .4rem; justify-content: flex-end; }
 
   #drop { position: fixed; inset: 0; z-index: 30; display: none; align-items: center;
           justify-content: center; font-weight: 600;
@@ -276,6 +359,8 @@ PAGE = r"""<!doctype html>
   <div class="sheet-top">
     <button class="ib" title="Close" onclick="closeSheet()" data-icon="close"></button>
     <span class="t" id="sheet-title"></span>
+    <button class="ib" title="Rename this photo" onclick="renamePhoto()"
+            data-icon="pencil"></button>
     <button class="ib danger" title="Delete this photo" onclick="deletePhoto()"
             data-icon="trash"></button>
   </div>
@@ -284,42 +369,66 @@ PAGE = r"""<!doctype html>
     <img id="stage-img" alt="" draggable="false" style="display:none">
     <div class="cropwrap" id="cropwrap" style="display:none">
       <div class="rot" id="rot"><img id="cropimg" alt="" draggable="false"></div>
-      <div class="frame" id="frame"></div>
-      <div class="hint">drag to move · scroll or pinch to zoom</div>
+      <div class="frame" id="frame"><i class="v"></i><i class="h"></i><u></u></div>
+      <div class="hint" id="hint"></div>
     </div>
     <div class="veil" id="veil"><div class="spin"></div></div>
   </div>
 
   <div class="sheet-foot">
-    <div class="strip" id="strip"></div>
-    <div class="ctl">
-      <button class="ib" id="b-crop" title="Adjust the crop" onclick="toggleCrop()"
-              data-icon="crop"></button>
-      <button class="ib" title="Fill the frame" onclick="preset('cover')"
-              data-icon="fill"></button>
-      <button class="ib" title="Fit the whole photo" onclick="preset('contain')"
-              data-icon="fit"></button>
-      <button class="ib" title="Rotate left" onclick="turn(-90)"
-              data-icon="rotl"></button>
-      <button class="ib" title="Rotate right" onclick="turn(90)"
-              data-icon="rotr"></button>
-      <button class="ib wide" id="b-dither" title="Dithering algorithm"
-              onclick="openDither()"><span data-icon="palette"></span>
-        <span id="d-name">—</span></button>
-      <button class="ib wide" id="show-btn" title="Put this on the panel"
-              onclick="showCurrent()" style="margin-left:auto;background:var(--accent);
-              border-color:var(--accent);color:#fff">
-        <span data-icon="send"></span>Show</button>
+    <!-- Two toolbars, one per mode. Placement is a gesture now, so the only geometry
+         control out here is the door into the editor. -->
+    <div id="foot-view">
+      <div class="strip" id="strip"></div>
+      <div class="ctl">
+        <button class="ib" id="b-crop" title="Crop, zoom and straighten"
+                onclick="toggleCrop()" data-icon="crop"></button>
+        <button class="ib wide" id="b-dither" title="Dithering algorithm"
+                onclick="openDither()"><span data-icon="palette"></span>
+          <span id="d-name">—</span></button>
+        <button class="ib wide" id="show-btn" title="Put this on the panel"
+                onclick="showCurrent()" style="margin-left:auto;background:var(--accent);
+                border-color:var(--accent);color:#fff">
+          <span data-icon="send"></span>Show</button>
+      </div>
+      <div class="chips" id="chips"></div>
     </div>
-    <div class="chips" id="chips"></div>
+    <div id="foot-crop" hidden>
+      <div class="dial" id="dial"><div class="ticks" id="ticks"></div>
+        <div class="needle"></div></div>
+      <div class="ctl">
+        <button class="ib" id="b-undo" title="Undo the last change"
+                onclick="undo()" data-icon="undo"></button>
+        <button class="ib" title="Start over" onclick="resetCrop()"
+                data-icon="reset"></button>
+        <output class="deg" id="deg">0°</output>
+        <button class="ib wide" title="Apply this crop" onclick="toggleCrop()"
+                style="margin-left:auto;background:var(--accent);
+                border-color:var(--accent);color:#fff">
+          <span data-icon="check"></span>Done</button>
+      </div>
+    </div>
   </div>
 </div>
 
 <div id="dpick" onclick="if (event.target === this) closeDither()">
   <div class="panel">
-    <h3>Dithering</h3>
+    <div class="head"><h3>Dithering</h3>
+      <button class="ib" title="Close" onclick="closeDither()" data-icon="close"></button>
+    </div>
     <div id="dopts"></div>
   </div>
+</div>
+
+<div id="ask" onclick="if (event.target === this) askDone(null)">
+  <form onsubmit="event.preventDefault(); askSubmit()">
+    <h3 id="ask-title"></h3>
+    <input id="ask-input" autocomplete="off" spellcheck="false">
+    <div class="row">
+      <button type="button" class="btn" onclick="askDone(null)">Cancel</button>
+      <button type="submit" class="btn primary" id="ask-ok">OK</button>
+    </div>
+  </form>
 </div>
 <div class="bar" id="bar"></div>
 
@@ -343,10 +452,8 @@ const ICONS = {
   folder: "M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z",
   pencil: "M4 20h4L20 8l-4-4L4 16zM14 6l4 4",
   crop: "M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14",
-  fill: "M4 9V4h5M20 15v5h-5M4 15v5h5M20 9V4h-5",
-  fit: "M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5",
-  rotl: "M9 14l-4-4 4-4M5 10h9a5 5 0 010 10h-4",
-  rotr: "M15 14l4-4-4-4M19 10h-9a5 5 0 000 10h4",
+  undo: "M4 10h10a5 5 0 010 10h-4M4 10l4-4M4 10l4 4",
+  reset: "M20 12a8 8 0 11-2.6-5.9M20 3v5h-5",
   palette: "M12 3a9 9 0 100 18h2a2 2 0 002-2 2 2 0 012-2h1a2 2 0 002-2 9 9 0 00-9-12z"
            + "M7.5 11h.01M10 7.5h.01M14 7.5h.01M16.5 11h.01",
   send: "M4 12l16-8-6 16-2-6z",
@@ -386,6 +493,33 @@ let ditherOptions = [], prefsNow = {}, panelSize = [1600, 1200];
 let sheet = null;           // the photo open in the sheet
 let want = {};              // fit / rotate / dither chosen in the sheet
 let selectedKey = null;
+
+// A modal of our own, because window.prompt/confirm are IGNORED inside a
+// cross-origin iframe — which is exactly how Home Assistant embeds this page in the
+// sidebar, where renaming and deleting quietly did nothing. Resolves to the typed
+// string, `true` for a bare confirmation, or null when dismissed.
+let askResolve = null, askHasInput = false;
+function ask({ title, value = null, ok = "OK", danger = false }) {
+  if (askResolve) { const stale = askResolve; askResolve = null; stale(null); }
+  askHasInput = value !== null;
+  $("ask-title").textContent = title;
+  const input = $("ask-input");
+  input.hidden = !askHasInput;
+  input.value = askHasInput ? value : "";
+  $("ask-ok").textContent = ok;
+  $("ask-ok").classList.toggle("danger", danger);
+  $("ask").classList.add("open");
+  if (askHasInput) setTimeout(() => { input.focus(); input.select(); }, 30);
+  return new Promise((resolve) => { askResolve = resolve; });
+}
+const askSubmit = () => askDone(askHasInput ? $("ask-input").value.trim() : true);
+function askDone(value) {
+  $("ask").classList.remove("open");
+  const resolve = askResolve;
+  askResolve = null;
+  if (resolve) resolve(value);
+}
+const confirmAsk = (title, ok) => ask({ title, ok, danger: true });
 
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("on");
@@ -545,7 +679,8 @@ async function loadCollections() {
 }
 
 async function newCollection() {
-  const name = prompt("Name for the new collection");
+  const name = await ask({ title: "Name for the new collection", value: "",
+                           ok: "Create" });
   if (!name) return;
   try {
     await api("/collections", { method: "POST",
@@ -556,7 +691,8 @@ async function newCollection() {
 
 async function renameCollection() {
   const c = collections.find((x) => x.id === collectionId);
-  const name = prompt("Rename collection", c ? c.name : "");
+  const name = await ask({ title: "Rename collection", value: c ? c.name : "",
+                           ok: "Rename" });
   if (!name) return;
   try {
     await api(`/collections/${collectionId}`, { method: "PATCH",
@@ -567,7 +703,8 @@ async function renameCollection() {
 }
 
 async function removeCollection() {
-  if (!confirm("Delete this collection? The photos stay in the library.")) return;
+  if (!await confirmAsk("Delete this collection? The photos stay in the library.",
+                        "Delete")) return;
   try {
     await api(`/collections/${collectionId}`, { method: "DELETE" });
     openTab("collections");
@@ -598,11 +735,11 @@ function openTab(next) {
 // -- the photo sheet ------------------------------------------------------
 // Two views over one photo. "view" shows the chosen render (press and hold to compare
 // it against the original); "crop" shows the photo behind a fixed-aspect frame you
-// drag and zoom. The frame is the panel's shape, so what you see inside it is exactly
-// what the panel will get.
+// drag, zoom and turn. The frame is the panel's shape, so what you see inside it is
+// exactly what the panel will get.
 let mode = "view";
 let crop = null;                 // [x, y, w, h] in ROTATED photo pixels
-let srcSize = [0, 0];            // the rotated photo's own size
+let srcSize = [0, 0];            // the rotated photo's bounding box
 let canvasSize = [1600, 1200];   // the panel's working canvas
 let viewT = { k: 1, tx: 0, ty: 0 };
 let frameBox = { x: 0, y: 0, w: 0, h: 0 };
@@ -633,6 +770,7 @@ async function openSheet(id) {
     ? [panelSize[1], panelSize[0]] : panelSize.slice();
   srcSize = rotatedSize([sheet.width, sheet.height], want.rotate);
   mode = "view";
+  history = [];
   paintSheet();
   setBusyUI(false);
   // Nothing rendered yet: make one, so you see the e-paper version rather than the
@@ -640,7 +778,18 @@ async function openSheet(id) {
   if (!sheet.renders.length) { rerender(); }
 }
 
-const rotatedSize = (size, r) => (((r % 180) + 180) % 180) ? [size[1], size[0]] : size.slice();
+// The bounding box a rotated photo occupies — and the pixel space `crop` is written
+// in, so this has to agree with the server's `rotated_size()` exactly. Off the quarter
+// turns that means reproducing PIL's expand box, corners rounded outward.
+function rotatedSize(size, r) {
+  const [w, h] = size, a = round1(norm360(r));
+  if (a % 90 === 0) { return (a % 180) ? [h, w] : [w, h]; }
+  const rad = a * Math.PI / 180;
+  const c = Math.abs(Math.cos(rad)), s = Math.abs(Math.sin(rad));
+  const bw = w * c + h * s, bh = w * s + h * c;
+  return [Math.ceil(w / 2 + bw / 2) - Math.floor(w / 2 - bw / 2),
+          Math.ceil(h / 2 + bh / 2) - Math.floor(h / 2 - bh / 2)];
+}
 
 function closeSheet() {
   $("sheet").classList.remove("open");
@@ -652,6 +801,9 @@ function paintSheet() {
   $("b-crop").classList.toggle("on", mode === "crop");
   $("stage-img").style.display = mode === "view" ? "" : "none";
   $("cropwrap").style.display = mode === "crop" ? "" : "none";
+  $("foot-view").hidden = mode === "crop";
+  $("foot-crop").hidden = mode !== "crop";
+  if (mode === "crop") paintCropBar();
   if (mode === "view") {
     $("stage-img").src = selectedKey
       ? `/library/${sheet.id}/renders/${selectedKey}?v=${selectedKey}`
@@ -669,7 +821,7 @@ function paintStrip() {
     wrap.style.cssText = "position:relative;flex:none";
     const b = document.createElement("button");
     b.className = r.key === selectedKey ? "sel" : "";
-    b.title = `${r.fit} · ${r.rotate}° · ${ditherLabel(r.dither)}`;
+    b.title = `${r.fit} · ${degText(r.rotate)} · ${ditherLabel(r.dither)}`;
     b.innerHTML = `<img draggable="false" alt=""
       src="${r.thumb}?v=${Math.floor(r.created_at)}">`;
     b.onclick = () => selectRender(r);
@@ -721,24 +873,51 @@ async function dropRender(key) {
 }
 
 // -- crop editor -----------------------------------------------------------
+// Placement is a set of gestures, not a row of presets: drag to move, pinch or scroll
+// to zoom, twist or work the dial to straighten. What used to be the cover/contain
+// buttons are DETENTS in the zoom instead — the scale snaps as it passes "fills the
+// frame" and "the whole photo", so both are still one gesture away and land exactly.
+const PX_PER_DEG = 4;   // how wide a degree is on the dial
+const SNAP_DEG = 2;     // capture window around every 45°
+const SNAP_K = 0.025;   // ... around the two frame-fitting scales, as a fraction
+const SNAP_PX = 8;      // ... and around the frame's edges and centre
+let history = [];       // {rotate, k, tx, ty}, pushed at the START of each gesture
+let snapNote = "";
+
+const norm360 = (a) => ((a % 360) + 360) % 360;
+const signedDeg = (a) => { const v = norm360(a); return v > 180 ? v - 360 : v; };
+const round1 = (a) => Math.round(a * 10) / 10;
+const degText = (a) => `${round1(signedDeg(a))}°`;
+
 function toggleCrop() {
   if (mode === "crop") { mode = "view"; paintSheet(); rerender(); return; }
   mode = "crop";
+  history = [];
+  snapNote = "";
   $("cropimg").src = `/library/${sheet.id}/original`;
   paintSheet();
-  layoutCrop();
+  if (!layoutStage()) return;   // no size yet — the observer below finishes the job
+  if (!crop) { crop = defaultCrop(srcSize, canvasSize, "cover"); }
+  applyCrop();
 }
 
 // The stage has no size until the browser has laid the sheet out, and laying the crop
 // frame out against a zero-sized box would set the scale to 0 and hide the photo.
 // Watching the element is the only reliable moment to do it.
-new ResizeObserver(() => { if (sheet && mode === "crop") layoutCrop(); })
-  .observe($("cropwrap"));
+new ResizeObserver(() => {
+  if (!sheet || mode !== "crop") return;
+  const keep = crop && crop.slice();
+  if (!layoutStage()) return;
+  crop = keep || defaultCrop(srcSize, canvasSize, "cover");
+  applyCrop();
+}).observe($("cropwrap"));
 
-function layoutCrop() {
+// Where the frame and the photo SIT. Separate from applyCrop() because an angle change
+// resizes the photo's box without meaning to throw the view away.
+function layoutStage() {
   const wrap = $("cropwrap");
   const sw = wrap.clientWidth, sh = wrap.clientHeight;
-  if (!sw || !sh) return;
+  if (!sw || !sh) return false;
   // The frame is the panel's shape, at 78% of the stage — enough room around it to
   // see what you are cropping away.
   const aspect = canvasSize[0] / canvasSize[1];
@@ -746,21 +925,20 @@ function layoutCrop() {
   if (fh > sh * 0.78) { fh = sh * 0.78; fw = fh * aspect; }
   frameBox = { x: (sw - fw) / 2, y: (sh - fh) / 2, w: fw, h: fh };
   const f = $("frame");
-  f.style.cssText = `left:${frameBox.x}px;top:${frameBox.y}px;`
-    + `width:${frameBox.w}px;height:${frameBox.h}px`;
+  f.style.left = `${frameBox.x}px`; f.style.top = `${frameBox.y}px`;
+  f.style.width = `${frameBox.w}px`; f.style.height = `${frameBox.h}px`;
 
   const [rw, rh] = srcSize;
   const rot = $("rot"), img = $("cropimg");
   rot.style.width = `${rw}px`; rot.style.height = `${rh}px`;
-  // The wrapper is the ROTATED size; the photo sits centred inside it, turned. That
-  // keeps every coordinate below in rotated-photo space, which is what the API wants.
+  // The wrapper is the photo's BOUNDING BOX; the photo sits centred inside it, turned
+  // about its own middle — exactly what PIL's rotate(expand=True) produces. That keeps
+  // every coordinate below in bounding-box pixels, which is what the API wants.
   img.style.width = `${sheet.width}px`; img.style.height = `${sheet.height}px`;
   img.style.left = `${(rw - sheet.width) / 2}px`;
   img.style.top = `${(rh - sheet.height) / 2}px`;
   img.style.transform = `rotate(${want.rotate}deg)`;
-
-  if (!crop) { crop = defaultCrop(srcSize, canvasSize, "cover"); }
-  applyCrop();
+  return true;
 }
 
 function defaultCrop(size, canvas, fit) {
@@ -788,6 +966,15 @@ function paintTransform() {
     frameBox.w / viewT.k,
     frameBox.h / viewT.k,
   ];
+  paintHint();
+}
+
+function paintHint() {
+  const note = document.body.classList.contains("rotating")
+    ? degText(want.rotate) : snapNote;
+  const h = $("hint");
+  h.textContent = note || "drag to move · pinch or scroll to zoom · twist to straighten";
+  h.classList.toggle("snap", !!note);
 }
 
 function clampView() {
@@ -802,68 +989,232 @@ function clampView() {
   viewT.ty = Math.min(frameBox.y + slackY, Math.max(frameBox.y + frameBox.h - h - slackY, viewT.ty));
 }
 
-function preset(fit) {
-  if (!sheet) return;
-  if (mode !== "crop") { crop = defaultCrop(srcSize, canvasSize, fit); rerender(); return; }
-  crop = defaultCrop(srcSize, canvasSize, fit);
-  applyCrop();
+// -- rotation --------------------------------------------------------------
+const frameCentre = () =>
+  ({ x: frameBox.x + frameBox.w / 2, y: frameBox.y + frameBox.h / 2 });
+
+// The photo turns inside its own bounding box, and `crop` is written in that box's
+// pixels — so changing the angle moves every coordinate. These two convert between a
+// point of the UNROTATED photo and where it currently sits on the stage, which is what
+// lets a rotation keep whatever is under the frame's centre exactly where it is.
+// CSS rotate() is clockwise with y down: [c, -s; s, c].
+function photoPointAt(scr) {
+  const th = want.rotate * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+  const ux = (scr.x - viewT.tx) / viewT.k - srcSize[0] / 2;
+  const uy = (scr.y - viewT.ty) / viewT.k - srcSize[1] / 2;
+  return { x: c * ux + s * uy + sheet.width / 2,
+           y: -s * ux + c * uy + sheet.height / 2 };
 }
 
-function turn(delta) {
-  if (!sheet) return;
-  want.rotate = (((want.rotate + delta) % 360) + 360) % 360;
+function placePhotoPointAt(p, scr) {
+  const th = want.rotate * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+  const dx = p.x - sheet.width / 2, dy = p.y - sheet.height / 2;
+  viewT.tx = scr.x - viewT.k * (c * dx - s * dy + srcSize[0] / 2);
+  viewT.ty = scr.y - viewT.k * (s * dx + c * dy + srcSize[1] / 2);
+}
+
+function setAngle(next) {
+  const at = frameCentre();
+  const anchor = photoPointAt(at);
+  want.rotate = round1(norm360(next));
   srcSize = rotatedSize([sheet.width, sheet.height], want.rotate);
-  // A rectangle chosen for the old orientation means nothing after a quarter turn.
-  crop = defaultCrop(srcSize, canvasSize, "cover");
-  if (mode === "crop") { layoutCrop(); } else { rerender(); }
+  layoutStage();
+  placePhotoPointAt(anchor, at);
+  clampView(); paintTransform(); paintCropBar();
 }
 
-(function dragging() {
+// Detents every 45°, so 0/45/90/… are the angles you get by aiming near them and the
+// ones in between still need only a nudge past the window.
+function snapAngle(a) {
+  const sd = signedDeg(a), detent = Math.round(sd / 45) * 45;
+  return Math.abs(sd - detent) <= SNAP_DEG ? detent : sd;
+}
+
+// The smallest scale at which the photo still covers the whole frame at this angle:
+// turn the FRAME by -angle instead and require its bounding box to fit inside the
+// photo. Conservative when tilted, which is the safe direction — it never leaves white.
+function coverScale() {
+  const th = want.rotate * Math.PI / 180;
+  const c = Math.abs(Math.cos(th)), s = Math.abs(Math.sin(th));
+  return Math.max((frameBox.w * c + frameBox.h * s) / sheet.width,
+                  (frameBox.w * s + frameBox.h * c) / sheet.height);
+}
+const containScale = () => Math.min(frameBox.w / srcSize[0], frameBox.h / srcSize[1]);
+
+function snapScale(k) {
+  for (const [target, note] of [[coverScale(), "fills the frame"],
+                                [containScale(), "the whole photo"]]) {
+    if (target > 0 && Math.abs(k - target) / target < SNAP_K) {
+      snapNote = note;
+      return target;
+    }
+  }
+  return k;
+}
+
+// Magnetism against the frame: its edges and its centre, per axis. Tilted, the photo's
+// "edges" are its bounding box's — an approximation while straightening, and exact
+// again at every quarter turn, which is when edge alignment actually matters.
+function snapTranslate() {
+  const w = srcSize[0] * viewT.k, h = srcSize[1] * viewT.k;
+  const pull = (lo, size, flo, fsize) => {
+    let best = 0;
+    for (const d of [flo - lo, flo + fsize - (lo + size),
+                     flo + fsize / 2 - (lo + size / 2)]) {
+      if (Math.abs(d) <= SNAP_PX && (!best || Math.abs(d) < Math.abs(best))) best = d;
+    }
+    return best;
+  };
+  const dx = pull(viewT.tx, w, frameBox.x, frameBox.w);
+  const dy = pull(viewT.ty, h, frameBox.y, frameBox.h);
+  viewT.tx += dx; viewT.ty += dy;
+  if ((dx || dy) && !snapNote) snapNote = "aligned to the frame";
+}
+
+function zoomTo(k) {
+  const factor = k / viewT.k;
+  if (!isFinite(factor) || factor <= 0) return;
+  const c = frameCentre();
+  viewT.tx = c.x - (c.x - viewT.tx) * factor;
+  viewT.ty = c.y - (c.y - viewT.ty) * factor;
+  viewT.k = k;
+  clampView(); paintTransform();
+}
+
+// -- undo ------------------------------------------------------------------
+// One entry per GESTURE, not per pointer event: a drag that moved the photo across the
+// stage is one thing you did, and undoing it a pixel at a time would be useless.
+function pushHistory() {
+  history.push({ rotate: want.rotate, k: viewT.k, tx: viewT.tx, ty: viewT.ty });
+  if (history.length > 60) history.shift();
+  paintCropBar();
+}
+
+function undo() {
+  const step = history.pop();
+  if (!step) return;
+  want.rotate = step.rotate;
+  srcSize = rotatedSize([sheet.width, sheet.height], want.rotate);
+  layoutStage();
+  viewT = { k: step.k, tx: step.tx, ty: step.ty };
+  snapNote = "";
+  paintTransform(); paintCropBar();
+}
+
+function resetCrop() {
+  pushHistory();
+  want.rotate = 0;
+  srcSize = rotatedSize([sheet.width, sheet.height], 0);
+  layoutStage();
+  crop = defaultCrop(srcSize, canvasSize, "cover");
+  snapNote = "";
+  applyCrop(); paintCropBar();
+}
+
+// -- the dial --------------------------------------------------------------
+function buildDial() {
+  const ticks = $("ticks");
+  if (ticks.childElementCount) return;
+  let html = "";
+  for (let a = -180; a <= 180; a += 5) {
+    const major = a % 45 === 0;
+    html += `<i class="${major ? "maj" : ""}" style="left:${a * PX_PER_DEG}px">`
+      + (major ? `<b>${a}</b>` : "") + "</i>";
+  }
+  ticks.innerHTML = html;
+}
+
+function paintCropBar() {
+  const a = signedDeg(want.rotate);
+  const onDetent = Math.abs(a - Math.round(a / 45) * 45) < 0.05;
+  $("deg").textContent = degText(want.rotate);
+  $("deg").classList.toggle("snap", onDetent);
+  $("ticks").style.transform = `translateX(${-a * PX_PER_DEG}px)`;
+  $("b-undo").disabled = !history.length;
+}
+
+(function straighten() {
+  const el = $("dial");
+  let start = null;
+  el.addEventListener("pointerdown", (e) => {
+    el.setPointerCapture(e.pointerId);
+    pushHistory();
+    start = { x: e.clientX, a: signedDeg(want.rotate) };
+    document.body.classList.add("rotating");
+    paintHint();
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    // The ruler follows your finger, so the picture turns the other way. Stops at ±180
+    // rather than wrapping, which would make the ticks jump mid-drag.
+    const raw = Math.max(-180, Math.min(180,
+      start.a - (e.clientX - start.x) / PX_PER_DEG));
+    setAngle(snapAngle(raw));
+  });
+  const end = () => {
+    if (!start) return;
+    start = null;
+    document.body.classList.remove("rotating");
+    paintHint();
+  };
+  ["pointerup", "pointercancel"].forEach((ev) => el.addEventListener(ev, end));
+})();
+
+// -- drag, pinch, twist ----------------------------------------------------
+(function gestures() {
   const wrap = $("cropwrap");
   const points = new Map();
-  let base = null;
-  const dist = () => {
-    const [a, b] = [...points.values()];
-    return Math.hypot(a.x - b.x, a.y - b.y);
+  let base = null, wheelAt = 0;
+  const pair = () => [...points.values()];
+  const dist = () => { const [a, b] = pair(); return Math.hypot(a.x - b.x, a.y - b.y); };
+  const twist = () => {
+    const [a, b] = pair();
+    return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
   };
+
   wrap.addEventListener("pointerdown", (e) => {
     wrap.setPointerCapture(e.pointerId);
+    if (!points.size) pushHistory();
     points.set(e.pointerId, { x: e.clientX, y: e.clientY });
     wrap.classList.add("grabbing");
-    if (points.size === 2) base = { d: dist(), k: viewT.k };
+    if (points.size === 2) {
+      // Both deltas are measured from the moment the second finger landed, so a snap
+      // never sticks: the next move recomputes from the raw gesture, not from where
+      // the snap put it.
+      base = { d: dist(), k: viewT.k, a: twist(), rot: signedDeg(want.rotate) };
+      document.body.classList.add("rotating");
+    }
   });
   wrap.addEventListener("pointermove", (e) => {
     if (!points.has(e.pointerId)) return;
     const prev = points.get(e.pointerId);
     points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    snapNote = "";
     if (points.size === 2 && base) {
-      zoomAt(base.k * (dist() / base.d) / viewT.k);
+      zoomTo(snapScale(base.k * (dist() / base.d)));
+      setAngle(snapAngle(base.rot + (twist() - base.a)));
     } else {
       viewT.tx += e.clientX - prev.x;
       viewT.ty += e.clientY - prev.y;
-      clampView(); paintTransform();
+      snapTranslate(); clampView(); paintTransform();
     }
   });
   const up = (e) => {
     points.delete(e.pointerId);
-    if (points.size < 2) base = null;
-    if (!points.size) { wrap.classList.remove("grabbing"); }
+    if (points.size < 2) { base = null; document.body.classList.remove("rotating"); }
+    if (!points.size) { wrap.classList.remove("grabbing"); snapNote = ""; paintHint(); }
   };
   wrap.addEventListener("pointerup", up);
   wrap.addEventListener("pointercancel", up);
   wrap.addEventListener("wheel", (e) => {
     e.preventDefault();
-    zoomAt(Math.exp(-e.deltaY / 400));
+    const now = performance.now();
+    if (now - wheelAt > 500) pushHistory();   // one entry per burst, not per notch
+    wheelAt = now;
+    snapNote = "";
+    zoomTo(snapScale(viewT.k * Math.exp(-e.deltaY / 400)));
   }, { passive: false });
 })();
-
-function zoomAt(factor) {
-  const cx = frameBox.x + frameBox.w / 2, cy = frameBox.y + frameBox.h / 2;
-  viewT.tx = cx - (cx - viewT.tx) * factor;
-  viewT.ty = cy - (cy - viewT.ty) * factor;
-  viewT.k *= factor;
-  clampView(); paintTransform();
-}
 
 // -- press and hold to compare with the original ---------------------------
 (function compare() {
@@ -962,8 +1313,29 @@ async function toggleCollection(id) {
   } catch (e) { toast(e.message); }
 }
 
+async function renamePhoto() {
+  if (!sheet) return;
+  const name = await ask({ title: "Rename photo", value: sheet.name || "",
+                           ok: "Rename" });
+  if (name === null) return;
+  try {
+    sheet = await api(`/library/${sheet.id}`, { method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      // "" clears the label, which falls back to the date the photo arrived.
+      body: JSON.stringify({ name: name || null }) });
+    $("sheet-title").textContent = titleOf(sheet);
+    const cell = document.querySelector(`.cell[data-id="${sheet.id}"]`);
+    if (cell) cell.title = titleOf(sheet);
+    const listed = photos.find((p) => p.id === sheet.id);
+    if (listed) listed.name = sheet.name;
+    poll();
+  } catch (e) { toast(e.message); }
+}
+
 async function deletePhoto() {
-  if (!sheet || !confirm(`Delete "${titleOf(sheet)}"? Every version of it goes too.`)) return;
+  if (!sheet) return;
+  if (!await confirmAsk(`Delete "${titleOf(sheet)}"? Every version of it goes too.`,
+                        "Delete")) return;
   try {
     await api(`/library/${sheet.id}`, { method: "DELETE" });
     closeSheet(); toast("Deleted"); await reload();
@@ -980,7 +1352,7 @@ async function nav(direction) {
 }
 
 async function clearPanel() {
-  if (!confirm("Blank the panel to white?")) return;
+  if (!await confirmAsk("Blank the panel to white?", "Clear")) return;
   try { await api("/display/clear", { method: "POST" }); busy = true; poll(); }
   catch (e) { toast(e.message); }
 }
@@ -1039,14 +1411,30 @@ document.addEventListener("drop", (e) => {
   upload(e.dataTransfer.files);
 });
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("ask").classList.contains("open")) { askDone(null); return; }
+  if (e.key === "z" && (e.metaKey || e.ctrlKey) && mode === "crop") {
+    e.preventDefault(); undo(); return;
+  }
   if (e.key !== "Escape") return;
   if ($("dpick").classList.contains("open")) { closeDither(); }
+  else if (mode === "crop") { toggleCrop(); }
   else if (sheet) { closeSheet(); }
 });
-// The frame is sized from the stage, so a rotation or a resized window has to redo it.
-addEventListener("resize", () => { if (sheet && mode === "crop") layoutCrop(); });
+// The other half of the iOS press-and-hold fix: -webkit-touch-callout stops the share
+// sheet, this stops the desktop/Android context menu on the same gesture.
+$("sheet").addEventListener("contextmenu", (e) => e.preventDefault());
+// The frame is sized from the stage, so a device rotation or a resized window has to
+// redo it — keeping the rectangle you chose, which is in photo pixels either way.
+addEventListener("resize", () => {
+  if (!sheet || mode !== "crop") return;
+  const keep = crop && crop.slice();
+  if (!layoutStage()) return;
+  crop = keep || defaultCrop(srcSize, canvasSize, "cover");
+  applyCrop();
+});
 
 paintIcons();
+buildDial();
 // Status first: it carries the panel size, the dither list and the prefs the sheet
 // needs before anything can be opened.
 poll()

@@ -177,11 +177,31 @@ saturation, shadows, highlights, tone, gamut)`:
   desaturated↔saturated palette at display time. Independent from the dithering
   saturation above.
 
-`render_for_inky` also takes **`rotate`** (0/90/180/270, clockwise) and **`crop`**.
+`render_for_inky` also takes **`rotate`** (any angle, clockwise) and **`crop`**.
 Two rotations are in play and they are not the same thing: `rotate` turns the
 *picture*, `orientation` turns the *canvas* because the frame hangs that way.
 `rotated_size()` exists because `fit=auto` compares aspect ratios, and turning a photo
 90° swaps its own.
+
+**Rotation is not limited to quarter turns** — the crop editor straightens horizons by
+hand. Three things follow from that and all three are load-bearing:
+
+- `apply_rotation()` keeps the transpose fast path for 0/90/180/270 (pure pixel moves,
+  no resampling) and falls back to `Image.rotate(-angle, BICUBIC, expand=True)`. PIL
+  counts counter-clockwise, hence the minus.
+- The photo then occupies its **bounding box**, and `crop` is expressed in *that box's*
+  pixels — so `rotated_size()` must reproduce PIL's `expand=True` maths exactly
+  (`ceil(max) - floor(min)` about the centre), because the browser computes the
+  rectangle in the same space. `app/gallery.py`'s `rotatedSize()` is the same formula;
+  they are checked against each other, don't change one alone.
+- The corners the rotation exposes are filled **white**, the colour `_crop_to()` pads
+  with, so both kinds of empty space dither identically.
+
+`normalise_angle()` folds any angle into [0, 360) and rounds to a **tenth of a degree**
+— finer than the panel can show, and coarse enough that a drag doesn't mint a render
+per hundredth. `render_key()` formats it with `:g`, which prints whole degrees without
+a decimal point, so every key minted back when only quarter turns existed still hashes
+the same and the renders already on disk stay usable.
 
 **`crop` is the real placement**; `fit` only names one of two rectangles. It is
 `[x, y, w, h]` in pixels of the *rotated* photo and **may extend past its edges** —
@@ -220,7 +240,7 @@ repeat. Only refresh the panel when you're happy.
 | `GET /library/{id}` | one photo, with every render made from it |
 | `PATCH /library/{id}` | rename, or replace which collections it is in |
 | `GET /library/{id}/{original\|thumb}` | the photo's own files |
-| `POST /library/{id}/render` | make (or reuse) a render with given `fit`/`rotate`/`dither` |
+| `POST /library/{id}/render` | make (or reuse) a render with given `crop`/`rotate`/`dither` |
 | `GET /library/{id}/renders/{key}[/thumb]` | one render |
 | `DELETE /library/{id}/renders/{key}` | drop one render |
 | `DELETE /library/{id}` | forget a photo (index entry + original, thumb and every render) |
@@ -382,19 +402,37 @@ Shaped like a phone photo app: a square-tile grid, a tab bar at the bottom for
 a badge with the render count and an ON FRAME pin for whatever is on the panel.
 
 The sheet is where a photo becomes a frame, and it is built like a photo editor:
-every control is an icon, and the toolbar reads crop · fill · fit · rotate · algorithm
-· **Show**. Above it, a strip of every render already made from this photo, each with
-its own delete button so trying things out doesn't leave rubbish behind.
+every control is an icon, and the toolbar is down to **crop · algorithm · Show** —
+placement is a gesture, so the only geometry control outside the editor is the door
+into it. Above the toolbar, a strip of every render already made from this photo, each
+with its own delete button so trying things out doesn't leave rubbish behind. The
+header carries rename and delete.
 
 - **Crop is a drag, not a dropdown.** The crop button swaps the stage for the photo
   behind a frame in the panel's exact shape: drag to move, scroll or pinch to zoom,
-  everything outside dimmed. Leaving crop mode renders the rectangle you chose. The
-  presets are two buttons that jump the rectangle to `cover` or `contain`.
+  twist or work the dial to straighten, everything outside dimmed. Leaving crop mode
+  renders the rectangle you chose.
+- **The presets became detents.** There are no cover/contain buttons; the *zoom* snaps
+  as it passes the scale that exactly fills the frame and the one that shows the whole
+  photo, so both are still one gesture away and land exactly. Angles snap every 45°,
+  and the photo's edges and centre snap to the frame's. `coverScale()` derives the
+  fill scale by turning the *frame* by -angle and requiring its bounding box to fit the
+  photo — conservative when tilted, which is the safe direction: it never leaves white.
+- **Rotation keeps the frame's centre still.** Changing the angle resizes the photo's
+  bounding box, which moves every coordinate, so `setAngle()` reads the point of the
+  unrotated photo currently under the frame's centre (`photoPointAt`) and puts it back
+  afterwards (`placePhotoPointAt`). Without that the picture slides away as you
+  straighten it.
+- **Undo is per gesture, not per event.** One entry is pushed when a drag, pinch, dial
+  drag or wheel burst *starts*; a drag across the whole stage is one thing you did.
 - **Press and hold the preview to compare with the original.** The dithered result is
   what you are judging, and holding shows what it came from.
 - **The algorithm picker explains itself** — a sheet of cards with what each one does
   to a photo (`DITHER_INFO`), because `JARVIS_JUDICE_NINKE` in a dropdown tells nobody
   anything.
+- **Prompts are drawn in the page** (`ask()`), not `window.prompt`. Chrome ignores
+  `prompt`/`confirm` in a **cross-origin iframe**, which is exactly how Home Assistant
+  embeds this page in the sidebar — renaming and deleting silently did nothing there.
 - Changing anything calls `POST /library/{id}/render` (`show=false`) and swaps the
   preview; the panel is only ever touched by **Show**. Opening a photo with no renders
   makes one, so you see the e-paper version rather than the photo. A veil with a
@@ -416,7 +454,7 @@ inside an HTTPS Home Assistant (§6). No build step and no CDN: the Pi has no bu
 fetching a framework to draw a grid, and the frame should keep working when the
 internet doesn't.
 
-**Three traps, all learned the hard way.**
+**Four traps, all learned the hard way.**
 
 *Dragging an image inside the page uploaded it.* The browser hands a dragged `<img>`
 to the drop target as a FILE, so the page's own drop handler treated moving the crop
@@ -433,6 +471,13 @@ Regression check: load the page twice and confirm zero non-GET requests.
 the scale to 0 and the photo vanishes; a later drag then clamps the scale to 0
 permanently. A `ResizeObserver` on the stage does the layout, and `clampView()` returns
 early until the frame has a size.
+
+*The render strip only scrolls while it is a grid item.* An `overflow-x: auto` box has
+an automatic minimum size of 0 **as a flex/grid item**; wrapped in a plain block it
+hands its full min-content width upward instead, and eight thumbnails pushed the Show
+button off the screen. `#foot-view` / `#foot-crop` are grids with `min-width: 0` for
+exactly that reason — and they need an explicit `[hidden] { display: none }`, because
+an id selector outranks the UA sheet's.
 
 *A render is the panel BUFFER* — always the panel's native landscape W×H, with a
 portrait layout transposed into it. Anything showing it to a human turns it back with
@@ -922,6 +967,7 @@ cycles); once an hour is plenty for weather/calendar.
 | Renders a preview but the panel never updates; `GET /status.last_error` shows `SystemExit: Woah there … Chip Select: (line 8, GPIO8) currently claimed by spi0 CS0` | Host missing `dtoverlay=spi0-0cs` — inky needs the CS GPIO(s) freed from the kernel to drive them via gpiod. Add it to `/boot/firmware/config.txt`, drop `/dev/spidev0.1` from the compose `devices:` list, reboot (§7 step 1b). Common after an OS re-image. |
 | Display refresh hangs or errors mid-transfer | `spidev.bufsiz=65536` missing from `cmdline.txt` (§7). |
 | Button C does nothing / interferes with display | Wrong GPIO for the panel: C is GPIO **16** on the 7.3" but GPIO **25** on the 13.3" (GPIO 16 = CS1 there). It's derived from `PANEL`; check `PANEL` matches the wired panel, or set `BUTTON_GPIO_C` (§2). |
+| A long press on the photo pops iOS's "Save Image" sheet instead of comparing | `-webkit-touch-callout: none` missing from the `img` rule in `app/gallery.py` (and the sheet's `contextmenu` handler for desktop/Android). |
 | Photo comes out sideways / squashed after re-hanging the frame | The **Mounting** setting still says the old orientation. Change it in HA (or `PATCH /prefs {"orientation":"portrait"}`) — that also re-shows the current photo (§4). |
 | Portrait photos arrive hard-cropped | `fit` is pinned to `cover`. Set it to `auto` so cover is only used when it wouldn't crop more than `auto_fit_max_crop` (§4). Note the iOS Shortcut sends an explicit `fit=` and overrides the device setting. |
 | Thumbnails sideways / the frame reads rotated in HA | Renders are the panel buffer; the *viewing* rotation lives in the thumbnail and in `GET /display/preview?view=true` (§4). If something shows a portrait mount sideways, it is fetching the raw preview. |

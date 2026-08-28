@@ -23,6 +23,7 @@ correct even if Pimoroni reorders it; otherwise we use the constant below.
 from __future__ import annotations
 
 import logging
+import math
 
 from PIL import Image
 
@@ -84,7 +85,8 @@ def _cover(img: Image.Image, size: tuple[int, int]) -> Image.Image:
 
 
 # Degrees CLOCKWISE (what a "rotate right" button means) -> the PIL transpose that
-# does it. PIL's own names count counter-clockwise, hence the flip.
+# does it. PIL's own names count counter-clockwise, hence the flip. Quarter turns get
+# their own path because a transpose just moves pixels: no resampling, no softening.
 ROTATIONS: dict[int, int | None] = {
     0: None,
     90: Image.ROTATE_270,
@@ -93,17 +95,51 @@ ROTATIONS: dict[int, int | None] = {
 }
 
 
-def apply_rotation(img: Image.Image, rotate: int) -> Image.Image:
+def normalise_angle(rotate: float) -> float:
+    """Any angle, folded into [0, 360) and rounded to a tenth of a degree.
+
+    A tenth is finer than anyone can see on an 800×480 panel and it keeps `render_key`
+    from minting a fresh render for a hundredth of a degree of drag."""
+    return round(float(rotate) % 360.0, 1)
+
+
+def apply_rotation(img: Image.Image, rotate: float) -> Image.Image:
     """Rotate the PHOTO before it is placed on the canvas. Independent of the frame's
-    mounting: that turns the canvas, this turns the picture inside it."""
-    transpose = ROTATIONS.get(int(rotate) % 360)
-    return img if transpose is None else img.transpose(transpose)
+    mounting: that turns the canvas, this turns the picture inside it.
+
+    Any angle is allowed — the crop editor lets you level a horizon by hand. Off the
+    quarter turns the image is resampled and grows to its bounding box, and the corners
+    that exposes are filled white, the same colour `_crop_to` pads with."""
+    angle = normalise_angle(rotate)
+    if angle in ROTATIONS:
+        transpose = ROTATIONS[angle]
+        return img if transpose is None else img.transpose(transpose)
+    return img.rotate(
+        -angle,  # PIL counts counter-clockwise
+        resample=Image.BICUBIC,
+        expand=True,
+        fillcolor=(255, 255, 255),
+    )
 
 
-def rotated_size(size: tuple[int, int], rotate: int) -> tuple[int, int]:
+def rotated_size(size: tuple[int, int], rotate: float) -> tuple[int, int]:
     """The photo's size after `rotate`. `fit=auto` compares aspect ratios, so it has to
-    measure the rotated photo, not the original."""
-    return (size[1], size[0]) if int(rotate) % 180 else (size[0], size[1])
+    measure the rotated photo, not the original — and the crop rectangle is expressed
+    in these pixels, so this must agree with `apply_rotation` exactly.
+
+    Off the quarter turns that means reproducing PIL's `expand=True` box, which rounds
+    the rotated corners outward (``ceil(max) - floor(min)``) about the image centre."""
+    w, h = size
+    angle = normalise_angle(rotate)
+    if angle in ROTATIONS:
+        return (h, w) if angle in (90, 270) else (w, h)
+    rad = math.radians(angle)
+    cos, sin = abs(math.cos(rad)), abs(math.sin(rad))
+    box_w, box_h = w * cos + h * sin, w * sin + h * cos
+    return (
+        math.ceil(w / 2 + box_w / 2) - math.floor(w / 2 - box_w / 2),
+        math.ceil(h / 2 + box_h / 2) - math.floor(h / 2 - box_h / 2),
+    )
 
 
 def working_canvas(size: tuple[int, int], orientation: str) -> tuple[int, int]:
@@ -211,7 +247,7 @@ def render_for_inky(
     size: tuple[int, int] | None = None,
     fit: str = "cover",
     orientation: str = "landscape",
-    rotate: int = 0,
+    rotate: float = 0.0,
     crop: list[float] | None = None,
     inky_palette: list[tuple[int, int, int]] | None = None,
     mode: str | None = None,
@@ -223,7 +259,7 @@ def render_for_inky(
     "portrait" (frame mounted vertically) we lay the photo out on a rotated H×W
     canvas and rotate the finished image 90° so it ends up W×H for the panel.
 
-    `rotate` turns the PHOTO (0/90/180/270, clockwise) before it is placed — that is a
+    `rotate` turns the PHOTO by any angle clockwise before it is placed — that is a
     property of the picture, where `orientation` is a property of the frame. `crop` is
     the rectangle of the ROTATED photo that lands on the canvas, in its pixels; it may
     extend past the edges, and what does becomes white. Omit it and `fit` picks one.

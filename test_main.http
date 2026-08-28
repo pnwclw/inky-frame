@@ -56,6 +56,11 @@ GET {{host}}/library/20260101-120000-deadbeef/original
 ### Make (or reuse) a render — the key is a hash of these parameters
 POST {{host}}/library/20260101-120000-deadbeef/render?fit=cover&rotate=90&dither=ATKINSON
 
+### rotate takes ANY angle, not just quarter turns — this is what the straighten dial
+### sends. Off a quarter turn the photo grows to its bounding box and the corners that
+### exposes come out white.
+POST {{host}}/library/20260101-120000-deadbeef/render?rotate=6.4&dither=ATKINSON
+
 ### ...or place an explicit rectangle, which is what the crop editor sends. x,y,w,h in
 ### pixels of the ROTATED photo; it may extend past the edges (that becomes white).
 POST {{host}}/library/20260101-120000-deadbeef/render?crop=120,0,1600,1200&dither=ATKINSON

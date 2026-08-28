@@ -33,6 +33,7 @@ import asyncio
 import io
 import json
 import logging
+import math
 import os
 import socket
 import urllib.parse
@@ -51,6 +52,7 @@ from .display import DisplayManager
 from .dithering import (
     AVAILABLE_DITHER_MODES,
     default_crop,
+    normalise_angle,
     resolve_dither_mode,
     rotated_size,
     working_canvas,
@@ -58,7 +60,7 @@ from .dithering import (
 from .gallery import PAGE as GALLERY_PAGE
 from .gpio_compat import install as install_gpio_compat
 from .gpio_compat import install_busy_wait_fix
-from .library import ROTATIONS, PhotoEntry, PhotoLibrary
+from .library import PhotoEntry, PhotoLibrary
 from .mqtt import MqttBridge
 from .prefs import FIT_MODES, ORIENTATIONS, Prefs
 from .shortcut import MENU_OPTIONS, build_shortcut_plist
@@ -357,11 +359,12 @@ def _parse_crop(raw: str | None) -> list[float] | None:
     return box
 
 
-def _validate_rotate(rotate: int) -> int:
-    if rotate % 360 not in ROTATIONS:
-        raise HTTPException(
-            400, f"rotate must be one of {', '.join(str(r) for r in ROTATIONS)}")
-    return rotate % 360
+def _validate_rotate(rotate: float) -> float:
+    """Degrees clockwise, any angle — the crop editor levels horizons by hand. Folded
+    into [0, 360) and rounded to a tenth so the render key stays stable."""
+    if not math.isfinite(rotate):
+        raise HTTPException(400, "rotate must be a finite number of degrees")
+    return normalise_angle(rotate)
 
 
 async def _render_and_store(
@@ -371,7 +374,7 @@ async def _render_and_store(
     fit: str | None,
     orientation: str | None,
     dither: str | None,
-    rotate: int = 0,
+    rotate: float = 0.0,
     crop: list[float] | None = None,
     show: bool,
     wait: bool,
@@ -442,7 +445,7 @@ async def _render_stored(
     fit: str | None = None,
     orientation: str | None = None,
     dither: str | None = None,
-    rotate: int | None = None,
+    rotate: float | None = None,
     crop: list[float] | None = None,
     show: bool = True,
     wait: bool = False,
@@ -724,8 +727,10 @@ async def display_image(
         description="How to lay the photo out. Omit to use how the frame is mounted "
         "(GET /prefs).",
     ),
-    rotate: int = Query(0, description="Turn the photo 0/90/180/270° clockwise before "
-                        "placing it. Turns the picture; `orientation` turns the frame."),
+    rotate: float = Query(0.0, description="Turn the photo this many degrees clockwise "
+                          "before placing it — any angle, not just quarter turns. Off "
+                          "the quarter turns the corners it exposes become white. "
+                          "Turns the picture; `orientation` turns the frame."),
     dither: str | None = Query(
         None,
         description="Dithering algorithm for this request (case-insensitive); "
@@ -804,7 +809,8 @@ async def display_library_photo(
     ),
     fit: str | None = Query(None, pattern="^(auto|cover|contain)$"),
     orientation: str | None = Query(None, pattern="^(landscape|portrait)$"),
-    rotate: int | None = Query(None, description="Turn the photo 0/90/180/270° clockwise"),
+    rotate: float | None = Query(None, description="Turn the photo this many degrees "
+                                 "clockwise — any angle, not just quarter turns"),
     crop: str | None = Query(None, description="x,y,w,h of the rotated photo to place"),
     dither: str | None = Query(
         None, description="Re-dither this photo with a different algorithm"),
@@ -829,7 +835,7 @@ async def library_render(
     photo_id: str,
     fit: str | None = Query(None, pattern="^(auto|cover|contain)$"),
     orientation: str | None = Query(None, pattern="^(landscape|portrait)$"),
-    rotate: int | None = Query(None),
+    rotate: float | None = Query(None, description="Degrees clockwise, any angle"),
     crop: str | None = Query(
         None, description="x,y,w,h of the ROTATED photo to place on the canvas, in its "
         "pixels. It may extend past the edges — that is how 'contain' and every "
