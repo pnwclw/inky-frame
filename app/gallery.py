@@ -259,15 +259,26 @@ PAGE = r"""<!doctype html>
   .bar { position: fixed; left: 0; top: 0; height: 2px; background: var(--accent);
          width: 0; transition: width .2s; z-index: 40; }
 
-  /* ---- dither picker ----------------------------------------------------- */
-  #dpick { position: fixed; inset: 0; z-index: 14; display: none;
+  /* ---- dither / background pickers --------------------------------------- */
+  #dpick, #bgpick { position: fixed; inset: 0; z-index: 14; display: none;
            background: color-mix(in srgb, var(--bg) 70%, transparent); }
-  #dpick.open { display: grid; place-items: end center; }
-  #dpick .panel { background: var(--sheet); border-top-left-radius: 16px;
+  #dpick.open, #bgpick.open { display: grid; place-items: end center; }
+  #dpick .panel, #bgpick .panel { background: var(--sheet);
+                  border-top-left-radius: 16px;
                   border-top-right-radius: 16px; width: min(560px, 100%);
                   max-height: 82vh; overflow: auto; padding: .8rem 1rem
                   calc(1rem + env(safe-area-inset-bottom)); }
-  #dpick h3 { margin: .2rem 0 .7rem; font-size: 1rem; }
+  #dpick h3, #bgpick h3 { margin: .2rem 0 .7rem; font-size: 1rem; }
+  .note { margin: 0 0 .8rem; color: var(--muted); font-size: .82rem; }
+  /* A swatch is the control: naming a colour in a dropdown says less than showing it. */
+  .sw { display: block; width: 1.15rem; height: 1.15rem; border-radius: 5px;
+        border: 1px solid var(--line); box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+  #bgopts { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+  .bgopt { display: grid; gap: .4rem; justify-items: center; padding: .7rem .4rem;
+           border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+           color: var(--fg); font-size: .82rem; }
+  .bgopt .sw { width: 2.2rem; height: 2.2rem; border-radius: 8px; }
+  .bgopt.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .dopt { display: grid; grid-template-columns: 1fr auto; gap: .1rem .6rem;
           width: 100%; text-align: left; background: var(--card); color: var(--fg);
           border: 1px solid var(--line); border-radius: 12px; padding: .6rem .8rem;
@@ -281,8 +292,9 @@ PAGE = r"""<!doctype html>
               stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
               align-self: center; }
   .dopt i { display: block; width: 1.15rem; }
-  #dpick .head { display: flex; align-items: center; gap: .5rem; margin: .2rem 0 .7rem; }
-  #dpick .head h3 { margin: 0; font-size: 1rem; flex: 1; }
+  #dpick .head, #bgpick .head { display: flex; align-items: center; gap: .5rem;
+                               margin: .2rem 0 .7rem; }
+  #dpick .head h3, #bgpick .head h3 { margin: 0; font-size: 1rem; flex: 1; }
 
   /* ---- ask / confirm ----------------------------------------------------- */
   /* Not window.prompt(): Chrome ignores prompt/confirm inside a CROSS-ORIGIN IFRAME,
@@ -383,6 +395,8 @@ PAGE = r"""<!doctype html>
       <div class="ctl">
         <button class="ib" id="b-crop" title="Crop, zoom and straighten"
                 onclick="toggleCrop()" data-icon="crop"></button>
+        <button class="ib" id="b-bg" title="Background colour" onclick="openBg()">
+          <i class="sw" id="bg-sw"></i></button>
         <button class="ib wide" id="b-dither" title="Dithering algorithm"
                 onclick="openDither()"><span data-icon="palette"></span>
           <span id="d-name">—</span></button>
@@ -417,6 +431,18 @@ PAGE = r"""<!doctype html>
       <button class="ib" title="Close" onclick="closeDither()" data-icon="close"></button>
     </div>
     <div id="dopts"></div>
+  </div>
+</div>
+
+<div id="bgpick" onclick="if (event.target === this) closeBg()">
+  <div class="panel">
+    <div class="head"><h3>Background</h3>
+      <button class="ib" title="Close" onclick="closeBg()" data-icon="close"></button>
+    </div>
+    <p class="note">What fills the frame where the photo doesn't reach — the margin a
+      fitted photo leaves, and the corners straightening exposes. Only the panel's own
+      six colours: any other would come out as a stipple rather than a flat block.</p>
+    <div id="bgopts"></div>
   </div>
 </div>
 
@@ -489,7 +515,7 @@ let collectionId = null;    // set while browsing inside one
 let photos = [], total = 0, collections = [];
 let current = {};           // {photo_id, render_key} — what is on the panel
 let busy = false, timer = null;
-let ditherOptions = [], prefsNow = {}, panelSize = [1600, 1200];
+let ditherOptions = [], bgOptions = [], prefsNow = {}, panelSize = [1600, 1200];
 let sheet = null;           // the photo open in the sheet
 let want = {};              // fit / rotate / dither chosen in the sheet
 let selectedKey = null;
@@ -556,6 +582,7 @@ async function poll() {
     busy = d.busy;
     current = { photo_id: s.library.current_id, render_key: s.library.current_render };
     ditherOptions = s.dither.available;
+    bgOptions = (s.background && s.background.available) || bgOptions;
     prefsNow = s.prefs;
     panelSize = s.display.resolution || panelSize;
 
@@ -763,6 +790,7 @@ async function openSheet(id) {
   want = {
     rotate: last ? last.rotate : 0,
     dither: last ? last.dither : (prefsNow.dither || "JARVIS_JUDICE_NINKE"),
+    background: (last && last.background) || prefsNow.background || "white",
   };
   crop = last && last.crop ? last.crop.slice() : null;
   selectedKey = last ? last.key : null;
@@ -798,6 +826,10 @@ function closeSheet() {
 
 function paintSheet() {
   $("d-name").textContent = ditherLabel(want.dither);
+  paintSwatch($("bg-sw"), want.background);
+  // What the frame is padded with has to be visible while you are choosing the crop,
+  // or you are deciding blind whether a gap looks right.
+  $("cropwrap").style.background = BG_COLOURS[want.background] || "#fff";
   $("b-crop").classList.toggle("on", mode === "crop");
   $("stage-img").style.display = mode === "view" ? "" : "none";
   $("cropwrap").style.display = mode === "crop" ? "" : "none";
@@ -821,7 +853,8 @@ function paintStrip() {
     wrap.style.cssText = "position:relative;flex:none";
     const b = document.createElement("button");
     b.className = r.key === selectedKey ? "sel" : "";
-    b.title = `${r.fit} · ${degText(r.rotate)} · ${ditherLabel(r.dither)}`;
+    b.title = `${r.fit} · ${degText(r.rotate)} · ${ditherLabel(r.dither)}`
+      + ` · ${bgLabel(r.background || "white")} background`;
     b.innerHTML = `<img draggable="false" alt=""
       src="${r.thumb}?v=${Math.floor(r.created_at)}">`;
     b.onclick = () => selectRender(r);
@@ -851,7 +884,7 @@ function paintChips() {
 
 function selectRender(r) {
   selectedKey = r.key;
-  want = { rotate: r.rotate, dither: r.dither };
+  want = { rotate: r.rotate, dither: r.dither, background: r.background || "white" };
   crop = r.crop ? r.crop.slice() : null;
   srcSize = rotatedSize([sheet.width, sheet.height], want.rotate);
   mode = "view";
@@ -880,9 +913,15 @@ async function dropRender(key) {
 const PX_PER_DEG = 4;   // how wide a degree is on the dial
 const SNAP_DEG = 2;     // capture window around every 45°
 const SNAP_K = 0.025;   // ... around the two frame-fitting scales, as a fraction
-const SNAP_PX = 8;      // ... and around the frame's edges and centre
+const SNAP_PX = 6;      // ... and around the frame's edges and centre
 let history = [];       // {rotate, k, tx, ty}, pushed at the START of each gesture
 let snapNote = "";
+// Where the drag really is, before any magnetism. Snapping writes to viewT ONLY —
+// feed a snapped position back into the next delta and the photo sticks: every small
+// move starts from inside the capture window and re-snaps, so it takes a single big
+// jerk to escape. Keeping the raw position makes the magnet a pure function of where
+// your finger is, and you leave it the moment you pass the window.
+let rawT = null;
 
 const norm360 = (a) => ((a % 360) + 360) % 360;
 const signedDeg = (a) => { const v = norm360(a); return v > 180 ? v - 360 : v; };
@@ -954,7 +993,7 @@ function applyCrop() {
   viewT.k = frameBox.w / crop[2];
   viewT.tx = frameBox.x - crop[0] * viewT.k;
   viewT.ty = frameBox.y - crop[1] * viewT.k;
-  paintTransform();
+  syncRaw(); paintTransform();
 }
 
 function paintTransform() {
@@ -1020,7 +1059,7 @@ function setAngle(next) {
   srcSize = rotatedSize([sheet.width, sheet.height], want.rotate);
   layoutStage();
   placePhotoPointAt(anchor, at);
-  clampView(); paintTransform(); paintCropBar();
+  clampView(); syncRaw(); paintTransform(); paintCropBar();
 }
 
 // Detents every 45°, so 0/45/90/… are the angles you get by aiming near them and the
@@ -1056,6 +1095,7 @@ function snapScale(k) {
 // "edges" are its bounding box's — an approximation while straightening, and exact
 // again at every quarter turn, which is when edge alignment actually matters.
 function snapTranslate() {
+  if (!frameBox.w) return;
   const w = srcSize[0] * viewT.k, h = srcSize[1] * viewT.k;
   const pull = (lo, size, flo, fsize) => {
     let best = 0;
@@ -1078,7 +1118,13 @@ function zoomTo(k) {
   viewT.tx = c.x - (c.x - viewT.tx) * factor;
   viewT.ty = c.y - (c.y - viewT.ty) * factor;
   viewT.k = k;
-  clampView(); paintTransform();
+  clampView(); syncRaw(); paintTransform();
+}
+
+// Anything that moves the photo other than a drag — a zoom, a rotation, an undo —
+// redefines where the drag would be resuming from.
+function syncRaw() {
+  if (rawT) { rawT.tx = viewT.tx; rawT.ty = viewT.ty; }
 }
 
 // -- undo ------------------------------------------------------------------
@@ -1098,7 +1144,7 @@ function undo() {
   layoutStage();
   viewT = { k: step.k, tx: step.tx, ty: step.ty };
   snapNote = "";
-  paintTransform(); paintCropBar();
+  syncRaw(); paintTransform(); paintCropBar();
 }
 
 function resetCrop() {
@@ -1174,7 +1220,7 @@ function paintCropBar() {
 
   wrap.addEventListener("pointerdown", (e) => {
     wrap.setPointerCapture(e.pointerId);
-    if (!points.size) pushHistory();
+    if (!points.size) { pushHistory(); rawT = { tx: viewT.tx, ty: viewT.ty }; }
     points.set(e.pointerId, { x: e.clientX, y: e.clientY });
     wrap.classList.add("grabbing");
     if (points.size === 2) {
@@ -1194,15 +1240,19 @@ function paintCropBar() {
       zoomTo(snapScale(base.k * (dist() / base.d)));
       setAngle(snapAngle(base.rot + (twist() - base.a)));
     } else {
-      viewT.tx += e.clientX - prev.x;
-      viewT.ty += e.clientY - prev.y;
-      snapTranslate(); clampView(); paintTransform();
+      rawT.tx += e.clientX - prev.x;
+      rawT.ty += e.clientY - prev.y;
+      viewT.tx = rawT.tx; viewT.ty = rawT.ty;
+      clampView(); syncRaw();   // the clamp is real movement; the snap below is not
+      snapTranslate(); paintTransform();
     }
   });
   const up = (e) => {
     points.delete(e.pointerId);
     if (points.size < 2) { base = null; document.body.classList.remove("rotating"); }
-    if (!points.size) { wrap.classList.remove("grabbing"); snapNote = ""; paintHint(); }
+    if (!points.size) {
+      wrap.classList.remove("grabbing"); rawT = null; snapNote = ""; paintHint();
+    }
   };
   wrap.addEventListener("pointerup", up);
   wrap.addEventListener("pointercancel", up);
@@ -1216,16 +1266,24 @@ function paintCropBar() {
   }, { passive: false });
 })();
 
-// -- press and hold to compare with the original ---------------------------
+// -- press and hold to compare with the source -----------------------------
+// Against the SAME framing, not the raw photo: `renders/<key>/source` is the identical
+// crop, angle, canvas and background with the dithering left off, so the only thing
+// that changes under your finger is the thing you are judging. (It used to swap in
+// `/original`, which jumped to a completely different picture.)
 (function compare() {
   const img = $("stage-img");
-  let hold = null, original = false;
+  let hold = null, showingSource = false;
+  const rendered = () => selectedKey
+    ? `/library/${sheet.id}/renders/${selectedKey}?v=${selectedKey}`
+    : `/library/${sheet.id}/original`;
+  const source = () => selectedKey
+    ? `/library/${sheet.id}/renders/${selectedKey}/source`
+    : `/library/${sheet.id}/original`;
   const show = (on) => {
-    if (!sheet || on === original) return;
-    original = on;
-    img.src = on ? `/library/${sheet.id}/original`
-      : (selectedKey ? `/library/${sheet.id}/renders/${selectedKey}?v=${selectedKey}`
-                     : `/library/${sheet.id}/original`);
+    if (!sheet || on === showingSource) return;
+    showingSource = on;
+    img.src = on ? source() : rendered();
   };
   img.addEventListener("pointerdown", (e) => {
     if (mode !== "view") return;
@@ -1242,7 +1300,8 @@ async function rerender() {
   if (!sheet) return;
   const seq = ++renderSeq;
   const q = new URLSearchParams({
-    rotate: want.rotate, dither: want.dither, show: "false",
+    rotate: want.rotate, dither: want.dither, background: want.background,
+    show: "false",
   });
   if (crop) { q.set("crop", crop.map((v) => Math.round(v)).join(",")); }
   setBusyUI(true);
@@ -1250,7 +1309,7 @@ async function rerender() {
     const d = await api(`/library/${sheet.id}/render?${q}`, { method: "POST" });
     if (seq !== renderSeq) return;   // a newer adjustment already won
     sheet = d.photo;
-    want = { rotate: d.rotate, dither: d.dither };
+    want = { rotate: d.rotate, dither: d.dither, background: d.background || "white" };
     crop = d.crop ? d.crop.slice() : crop;
     canvasSize = d.canvas || canvasSize;
     srcSize = d.source || srcSize;
@@ -1274,6 +1333,44 @@ async function showCurrent() {
     closeSheet();
   } catch (e) { toast(e.message); setBusyUI(false); }
 }
+
+// -- background picker -----------------------------------------------------
+// Only the panel's six colours: one of them dithers to a FLAT block, anything else to
+// a stipple of the six — which is not a background, it's noise.
+const BG_COLOURS = {
+  white: "#ffffff", black: "#000000", red: "#ff0000",
+  green: "#00d000", blue: "#0000ff", yellow: "#ffe000",
+};
+const bgLabel = (name) => name.charAt(0).toUpperCase() + name.slice(1);
+
+function paintSwatch(el, name) {
+  if (!el) return;
+  el.style.background = BG_COLOURS[name] || "#fff";
+}
+
+function openBg() {
+  const box = $("bgopts");
+  box.innerHTML = "";
+  const names = (bgOptions.length ? bgOptions : Object.keys(BG_COLOURS));
+  names.forEach((name) => {
+    const b = document.createElement("button");
+    b.className = "bgopt" + (name === want.background ? " sel" : "");
+    b.innerHTML = `<i class="sw"></i><span>${bgLabel(name)}</span>`;
+    paintSwatch(b.querySelector(".sw"), name);
+    b.onclick = () => {
+      closeBg();
+      if (name === want.background) return;
+      want.background = name;
+      // Repaint the stage straight away; the render follows.
+      $("cropwrap").style.background = BG_COLOURS[name] || "#fff";
+      paintSwatch($("bg-sw"), name);
+      if (mode !== "crop") rerender();
+    };
+    box.appendChild(b);
+  });
+  $("bgpick").classList.add("open");
+}
+const closeBg = () => $("bgpick").classList.remove("open");
 
 // -- dither picker ---------------------------------------------------------
 function openDither() {
@@ -1416,7 +1513,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault(); undo(); return;
   }
   if (e.key !== "Escape") return;
-  if ($("dpick").classList.contains("open")) { closeDither(); }
+  if ($("bgpick").classList.contains("open")) { closeBg(); }
+  else if ($("dpick").classList.contains("open")) { closeDither(); }
   else if (mode === "crop") { toggleCrop(); }
   else if (sheet) { closeSheet(); }
 });

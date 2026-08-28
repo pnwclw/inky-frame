@@ -1,5 +1,5 @@
 """The device settings that are a choice: how the frame is mounted, how a photo is
-placed, which dithering algorithm new photos get.
+placed, which dithering algorithm new photos get and what pads the empty space.
 
 These are the frame's own persisted prefs (`<OUTPUT_DIR>/prefs.json`), not Home
 Assistant state — `PATCH /prefs` is the single write path whether the change came from
@@ -53,6 +53,18 @@ SELECTS: tuple[InkySelectDescription, ...] = (
         pref="dither",
         # Straight from the frame, so the list tracks whatever epaper-dithering ships.
         options_from=lambda status: list((status.get("dither") or {}).get("available") or []),
+    ),
+    InkySelectDescription(
+        key="background",
+        name="Background",
+        icon="mdi:format-color-fill",
+        entity_category=EntityCategory.CONFIG,
+        pref="background",
+        # The panel's own six colours, reported by the frame — a colour outside the
+        # palette would dither to a stipple instead of a flat block.
+        options_from=lambda status: list(
+            (status.get("background") or {}).get("available") or []
+        ),
     ),
 )
 

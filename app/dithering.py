@@ -44,6 +44,34 @@ INKY_PALETTE_RGB: list[tuple[int, int, int]] = [
 ]
 
 
+# What the empty parts of the canvas are filled with — the margin a `contain` crop
+# leaves, and the corners a free rotation exposes. Only the SIX COLOURS THE PANEL CAN
+# MAKE are offered: a palette colour survives the dithering pass completely flat
+# (verified: 4096/4096 pixels unchanged for each), while any other colour comes out as
+# a noisy stipple of the six, which is the last thing wanted behind a photo.
+BACKGROUND_COLOURS: dict[str, tuple[int, int, int]] = {
+    "white": (255, 255, 255),
+    "black": (0, 0, 0),
+    "red": (255, 0, 0),
+    "green": (0, 255, 0),
+    "blue": (0, 0, 255),
+    "yellow": (255, 255, 0),
+}
+# White is the historical default and stays out of `render_key` for that reason, so
+# every key minted before backgrounds existed still resolves (app/library.py).
+DEFAULT_BACKGROUND = "white"
+BACKGROUND_NAMES: tuple[str, ...] = tuple(BACKGROUND_COLOURS)
+
+
+def background_rgb(name: str | None) -> tuple[int, int, int]:
+    """Name -> RGB, falling back to white rather than raising: a stored render whose
+    colour a later version dropped must still be displayable."""
+    return BACKGROUND_COLOURS.get(
+        (name or DEFAULT_BACKGROUND).strip().lower(),
+        BACKGROUND_COLOURS[DEFAULT_BACKGROUND],
+    )
+
+
 # Every dithering algorithm the installed epaper-dithering exposes, discovered at
 # import so the list tracks the library version. Names match DitherMode members.
 AVAILABLE_DITHER_MODES: tuple[str, ...] = tuple(
@@ -103,13 +131,16 @@ def normalise_angle(rotate: float) -> float:
     return round(float(rotate) % 360.0, 1)
 
 
-def apply_rotation(img: Image.Image, rotate: float) -> Image.Image:
+def apply_rotation(
+    img: Image.Image, rotate: float, background: tuple[int, int, int] = (255, 255, 255)
+) -> Image.Image:
     """Rotate the PHOTO before it is placed on the canvas. Independent of the frame's
     mounting: that turns the canvas, this turns the picture inside it.
 
     Any angle is allowed — the crop editor lets you level a horizon by hand. Off the
     quarter turns the image is resampled and grows to its bounding box, and the corners
-    that exposes are filled white, the same colour `_crop_to` pads with."""
+    that exposes are filled with `background` — the same colour `_crop_to` pads with,
+    so the two kinds of empty space are indistinguishable."""
     angle = normalise_angle(rotate)
     if angle in ROTATIONS:
         transpose = ROTATIONS[angle]
@@ -118,7 +149,7 @@ def apply_rotation(img: Image.Image, rotate: float) -> Image.Image:
         -angle,  # PIL counts counter-clockwise
         resample=Image.BICUBIC,
         expand=True,
-        fillcolor=(255, 255, 255),
+        fillcolor=background,
     )
 
 
@@ -199,15 +230,21 @@ def default_crop(
     return [(iw - w) / 2, (ih - h) / 2, w, h]
 
 
-def _crop_to(img: Image.Image, size: tuple[int, int], box: list[float]) -> Image.Image:
+def _crop_to(
+    img: Image.Image,
+    size: tuple[int, int],
+    box: list[float],
+    background: tuple[int, int, int] = (255, 255, 255),
+) -> Image.Image:
     """Map an explicit crop rectangle onto the canvas.
 
     The rectangle is in image pixels and MAY extend past the edges — that is how
     `contain` and every dragged position between the presets are expressed. Whatever
-    falls outside the photo becomes white, so one code path covers all of them."""
+    falls outside the photo becomes `background`, so one code path covers all of
+    them."""
     tw, th = size
     x, y, w, h = box
-    canvas = Image.new("RGB", (tw, th), (255, 255, 255))
+    canvas = Image.new("RGB", (tw, th), background)
     if w <= 0 or h <= 0:
         return canvas
     sx, sy = tw / w, th / h
@@ -240,6 +277,41 @@ def _resolve_palette(settings: Settings):
     return getattr(ColorScheme, settings.dither_color_scheme)
 
 
+def _to_panel(img: Image.Image, orientation: str) -> Image.Image:
+    """A portrait mount is composed on the ROTATED canvas; the panel is always
+    physically landscape, so the finished image is turned back at the very end.
+    Transposing keeps mode "P" and its palette, so this is safe after quantizing."""
+    return img.transpose(Image.ROTATE_90) if orientation == "portrait" else img
+
+
+def place_on_canvas(
+    image: Image.Image,
+    *,
+    size: tuple[int, int],
+    fit: str = "cover",
+    orientation: str = "landscape",
+    rotate: float = 0.0,
+    crop: list[float] | None = None,
+    background: str = DEFAULT_BACKGROUND,
+) -> Image.Image:
+    """Everything the photo goes through BEFORE the dithering: turn it, then land the
+    crop rectangle on the working canvas. Returns RGB at the working canvas's size.
+
+    Split out of `render_for_inky` for the gallery's press-and-hold compare, which
+    needs exactly this and no dithering — the whole point of that comparison is to see
+    what the dithering did, so the two images must differ in nothing else. It is also
+    the honest statement of the pipeline's order: **every geometric operation happens
+    on the ORIGINAL, at full resolution, and the dithering is the last step.** Rotating
+    or scaling an already-dithered image would smear six flat colours into mud.
+    """
+    work = working_canvas(size, orientation)
+    bg = background_rgb(background)
+    rgb = apply_rotation(image.convert("RGB"), rotate, background=bg)
+    # `crop` is the real placement — cover/contain are just the two rectangles you get
+    # from the presets, so the picker can hand back anything in between.
+    return _crop_to(rgb, work, crop or default_crop(rgb.size, work, fit), background=bg)
+
+
 def render_for_inky(
     image: Image.Image,
     settings: Settings,
@@ -249,6 +321,7 @@ def render_for_inky(
     orientation: str = "landscape",
     rotate: float = 0.0,
     crop: list[float] | None = None,
+    background: str = DEFAULT_BACKGROUND,
     inky_palette: list[tuple[int, int, int]] | None = None,
     mode: str | None = None,
 ) -> Image.Image:
@@ -262,16 +335,16 @@ def render_for_inky(
     `rotate` turns the PHOTO by any angle clockwise before it is placed — that is a
     property of the picture, where `orientation` is a property of the frame. `crop` is
     the rectangle of the ROTATED photo that lands on the canvas, in its pixels; it may
-    extend past the edges, and what does becomes white. Omit it and `fit` picks one.
+    extend past the edges, and what does becomes `background`. Omit it and `fit` picks
+    one.
     """
     if size is None:
         size = tuple(settings.panel_spec.resolution)
-    work = working_canvas(size, orientation)
 
-    rgb = apply_rotation(image.convert("RGB"), rotate)
-    # `crop` is the real placement — cover/contain are just the two rectangles you get
-    # from the presets, so the picker can hand back anything in between.
-    rgb = _crop_to(rgb, work, crop or default_crop(rgb.size, work, fit))
+    rgb = place_on_canvas(
+        image, size=size, fit=fit, orientation=orientation,
+        rotate=rotate, crop=crop, background=background,
+    )
 
     dithered = dither_image(
         rgb,
@@ -290,8 +363,4 @@ def render_for_inky(
     # dither=NONE: the input already contains only the 6 colours, so this is a
     # lossless relabel into inky's index order, not a second dithering pass.
     p = dithered.convert("RGB").quantize(palette=pal, dither=Image.Dither.NONE)
-
-    if orientation == "portrait":
-        # transpose keeps the "P" mode + palette; 1200×1600 -> 1600×1200.
-        p = p.transpose(Image.ROTATE_90)
-    return p
+    return _to_panel(p, orientation)

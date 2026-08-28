@@ -57,7 +57,13 @@ from pathlib import Path
 from PIL import Image
 
 from .config import Settings
-from .dithering import default_crop, normalise_angle, rotated_size, working_canvas
+from .dithering import (
+    DEFAULT_BACKGROUND,
+    default_crop,
+    normalise_angle,
+    rotated_size,
+    working_canvas,
+)
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +95,10 @@ class RenderEntry:
     # overhang the edges. Defaulted so an index written before crops existed still
     # loads — the v3 migration fills it in.
     crop: list[float] = field(default_factory=list)
+    # What the canvas was padded with. Defaulted for the same reason as `crop`: an
+    # index written before backgrounds existed must still load, and white is what
+    # those renders were made with.
+    background: str = DEFAULT_BACKGROUND
     bytes_on_disk: int = 0
     shown_count: int = 0
     last_shown_at: float | None = None
@@ -158,6 +168,7 @@ def render_key(
     orientation: str,
     dither: str,
     resolution: list[int] | tuple,
+    background: str = DEFAULT_BACKGROUND,
 ) -> str:
     """Identity of a rendered look — the crop rectangle, not the preset that produced
     it, because two presets can land on the same rectangle. Rounded to whole pixels so
@@ -165,13 +176,17 @@ def render_key(
     Resolution is in there on purpose: after a panel swap the old render is the wrong
     size and must not be reused.
 
-    The angle is formatted with `:g`, which prints a whole number of degrees without a
-    decimal point — so every key minted back when rotation was limited to the quarter
-    turns still resolves to the same hash, and the renders already on disk stay usable.
+    Two things here exist ONLY to keep keys minted by older versions resolving, so the
+    renders already on disk stay usable: the angle is formatted with `:g`, which prints
+    a whole number of degrees without a decimal point (back when only the quarter turns
+    existed it was an int), and a WHITE background is left out of the hash entirely,
+    because white is what every render made before backgrounds existed was padded with.
     """
     box = "x".join(str(round(v)) for v in (crop or [0, 0, 0, 0]))
     angle = normalise_angle(rotate)
     raw = f"{box}|{angle:g}|{orientation}|{dither.upper()}|{tuple(resolution)}"
+    if (background or DEFAULT_BACKGROUND) != DEFAULT_BACKGROUND:
+        raw += f"|bg={background}"
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
 
@@ -556,6 +571,7 @@ class PhotoLibrary:
         rotate: float,
         orientation: str,
         dither: str,
+        background: str = DEFAULT_BACKGROUND,
         shown: bool = False,
     ) -> RenderEntry | None:
         """File a rendered version. Rendering the same look again overwrites the same
@@ -566,13 +582,15 @@ class PhotoLibrary:
                 return None
             resolution = list(rendered.size)
             key = render_key(crop=crop, rotate=rotate, orientation=orientation,
-                             dither=dither, resolution=resolution)
+                             dither=dither, resolution=resolution,
+                             background=background)
             render = next((r for r in entry.renders if r.key == key), None)
             if render is None:
                 render = RenderEntry(
                     key=key, created_at=time.time(), fit=fit, crop=list(crop),
                     rotate=rotate, orientation=orientation, dither=dither,
-                    panel=self.settings.panel, resolution=resolution,
+                    background=background, panel=self.settings.panel,
+                    resolution=resolution,
                 )
                 entry.renders.append(render)
             self._write_render_files(photo_id, key, rendered, orientation)

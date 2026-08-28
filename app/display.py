@@ -21,7 +21,7 @@ from pathlib import Path
 from PIL import Image
 
 from .config import Settings
-from .dithering import INKY_PALETTE_RGB, render_for_inky
+from .dithering import DEFAULT_BACKGROUND, INKY_PALETTE_RGB, render_for_inky
 
 log = logging.getLogger(__name__)
 
@@ -87,8 +87,9 @@ class DisplayManager:
         fit: str,
         orientation: str = "landscape",
         mode: str | None = None,
-        rotate: int = 0,
+        rotate: float = 0.0,
         crop: list[float] | None = None,
+        background: str = DEFAULT_BACKGROUND,
     ) -> Image.Image:
         return render_for_inky(
             image,
@@ -98,6 +99,7 @@ class DisplayManager:
             orientation=orientation,
             rotate=rotate,
             crop=crop,
+            background=background,
             inky_palette=self.inky_palette,
             mode=mode,
         )
@@ -147,13 +149,14 @@ class DisplayManager:
         fit: str = "cover",
         orientation: str = "landscape",
         mode: str | None = None,
-        rotate: int = 0,
+        rotate: float = 0.0,
         crop: list[float] | None = None,
+        background: str = DEFAULT_BACKGROUND,
     ) -> Image.Image:
         """Render + write preview without touching the panel. Returns the mode-"P"
         image so the caller can archive it (app/library.py) without re-rendering."""
         p_image = await asyncio.to_thread(
-            self.render, image, fit, orientation, mode, rotate, crop)
+            self.render, image, fit, orientation, mode, rotate, crop, background)
         await asyncio.to_thread(self._save_preview, p_image)
         return p_image
 
@@ -165,8 +168,9 @@ class DisplayManager:
         orientation: str = "landscape",
         wait: bool = False,
         mode: str | None = None,
-        rotate: int = 0,
+        rotate: float = 0.0,
         crop: list[float] | None = None,
+        background: str = DEFAULT_BACKGROUND,
         coalesce: bool = False,
     ) -> Image.Image:
         """Render, then push to the panel. Returns the mode-"P" image that was sent.
@@ -180,7 +184,7 @@ class DisplayManager:
         is eventually shown; True (MQTT commands) is latest-wins — see _queue_latest.
         """
         p_image = await asyncio.to_thread(
-            self.render, image, fit, orientation, mode, rotate, crop)
+            self.render, image, fit, orientation, mode, rotate, crop, background)
         return await self.show_rendered(p_image, wait=wait, coalesce=coalesce)
 
     async def show_rendered(

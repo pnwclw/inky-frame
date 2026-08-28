@@ -183,6 +183,21 @@ Two rotations are in play and they are not the same thing: `rotate` turns the
 `rotated_size()` exists because `fit=auto` compares aspect ratios, and turning a photo
 90° swaps its own.
 
+**The order is: geometry on the ORIGINAL, dithering last.** `place_on_canvas()` does
+the whole geometric half — rotate, then land the crop rectangle on the working canvas —
+at full resolution, straight from the archived original, and only then is the result
+dithered. Nothing ever rotates or rescales an already-dithered image: that would smear
+six flat colours into mud. It is a function of its own because the gallery's
+press-and-hold compare needs exactly it and no dithering, so the two images a person is
+comparing differ in *nothing* but the dithering
+(`GET /library/{id}/renders/{key}/source`).
+
+**The empty space has a colour**, and it is a pref (`background`, §4). `contain` leaves
+a margin and a free rotation exposes corners; both are filled with the same value, so
+they are indistinguishable. Only the panel's **six palette colours** are offered: each
+survives `dither_image` completely flat (verified — 4096/4096 pixels unchanged), while
+any other colour comes out as a stipple of the six, which is not a background.
+
 **Rotation is not limited to quarter turns** — the crop editor straightens horizons by
 hand. Three things follow from that and all three are load-bearing:
 
@@ -199,9 +214,14 @@ hand. Three things follow from that and all three are load-bearing:
 
 `normalise_angle()` folds any angle into [0, 360) and rounds to a **tenth of a degree**
 — finer than the panel can show, and coarse enough that a drag doesn't mint a render
-per hundredth. `render_key()` formats it with `:g`, which prints whole degrees without
-a decimal point, so every key minted back when only quarter turns existed still hashes
-the same and the renders already on disk stay usable.
+per hundredth.
+
+**Two things in `render_key()` exist only to keep old keys resolving**, so the renders
+already on the Pi stay usable instead of being silently re-rendered into new files: the
+angle is formatted with `:g` (whole degrees print without a decimal point, which is what
+an int used to produce), and a **white background is left out of the hash entirely**,
+because white is what every render made before backgrounds existed was padded with.
+Checked against the live library: `a440b17b51` still hashes to itself.
 
 **`crop` is the real placement**; `fit` only names one of two rectangles. It is
 `[x, y, w, h]` in pixels of the *rotated* photo and **may extend past its edges** —
@@ -242,6 +262,7 @@ repeat. Only refresh the panel when you're happy.
 | `GET /library/{id}/{original\|thumb}` | the photo's own files |
 | `POST /library/{id}/render` | make (or reuse) a render with given `crop`/`rotate`/`dither` |
 | `GET /library/{id}/renders/{key}[/thumb]` | one render |
+| `GET /library/{id}/renders/{key}/source` | the same framing UNDITHERED — what press-and-hold compares against |
 | `DELETE /library/{id}/renders/{key}` | drop one render |
 | `DELETE /library/{id}` | forget a photo (index entry + original, thumb and every render) |
 | `GET`/`POST /collections`, `PATCH`/`DELETE /collections/{id}` | collections |
@@ -293,6 +314,7 @@ to re-seed.
 | `fit` | `auto` / `cover` / `contain` | default placement for an incoming photo |
 | `auto_fit_max_crop` | 0.0–1.0 | the threshold `auto` uses |
 | `dither` | any algorithm name | default dithering for new photos |
+| `background` | white/black/red/green/blue/yellow | fills the canvas where the photo doesn't reach |
 
 **`fit=auto` is the point of this file.** `cover` looks best — photo edge to edge —
 but only while the aspect ratios are close; forcing a portrait photo onto a
@@ -417,7 +439,13 @@ header carries rename and delete.
   photo, so both are still one gesture away and land exactly. Angles snap every 45°,
   and the photo's edges and centre snap to the frame's. `coverScale()` derives the
   fill scale by turning the *frame* by -angle and requiring its bounding box to fit the
-  photo — conservative when tilted, which is the safe direction: it never leaves white.
+  photo — conservative when tilted, which is the safe direction: it never leaves a gap.
+- **Magnetism writes to `viewT`, never to `rawT`.** A drag keeps its own unsnapped
+  position and the snap is applied on top, for display only. Feed a snapped position
+  back into the next delta and the photo STICKS: every small move restarts inside the
+  capture window and re-snaps, so only one big jerk escapes. With the raw position kept
+  the magnet grabs within 6 px, holds for ~13 px of travel, then lets go exactly where
+  your finger is.
 - **Rotation keeps the frame's centre still.** Changing the angle resizes the photo's
   bounding box, which moves every coordinate, so `setAngle()` reads the point of the
   unrotated photo currently under the frame's centre (`photoPointAt`) and puts it back
@@ -425,8 +453,12 @@ header carries rename and delete.
   straighten it.
 - **Undo is per gesture, not per event.** One entry is pushed when a drag, pinch, dial
   drag or wheel burst *starts*; a drag across the whole stage is one thing you did.
-- **Press and hold the preview to compare with the original.** The dithered result is
-  what you are judging, and holding shows what it came from.
+- **Press and hold the preview to compare.** Against `renders/{key}/source` — the
+  identical crop, angle, canvas and background with the dithering left off — *not* the
+  raw original, which is a differently framed picture and answers a question nobody
+  asked. The only thing that changes under your finger is the thing being judged.
+- **The background is a swatch in the toolbar**, and the crop stage is painted with it,
+  so a margin is something you see while choosing the crop rather than afterwards.
 - **The algorithm picker explains itself** — a sheet of cards with what each one does
   to a photo (`DITHER_INFO`), because `JARVIS_JUDICE_NINKE` in a dropdown tells nobody
   anything.

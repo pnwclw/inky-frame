@@ -51,8 +51,10 @@ from .dashboards import DashboardRenderer
 from .display import DisplayManager
 from .dithering import (
     AVAILABLE_DITHER_MODES,
+    BACKGROUND_NAMES,
     default_crop,
     normalise_angle,
+    place_on_canvas,
     resolve_dither_mode,
     rotated_size,
     working_canvas,
@@ -260,6 +262,7 @@ async def status():
                    "mqtt_base_topic": settings.mqtt_base_topic},
         "display": display.status(),
         "dither": {"default": settings.dither_mode, "available": list(AVAILABLE_DITHER_MODES)},
+        "background": {"default": prefs.background, "available": list(BACKGROUND_NAMES)},
         "dashboards": dashboards.available(),
         "prefs": prefs.as_dict(),
         "library": library.stats(),
@@ -359,6 +362,18 @@ def _parse_crop(raw: str | None) -> list[float] | None:
     return box
 
 
+def _validate_background(name: str | None) -> str | None:
+    """The six panel colours, nothing else — anything outside the palette dithers to a
+    stipple instead of the flat block a background is supposed to be."""
+    if name is None:
+        return None
+    text = name.strip().lower()
+    if text not in BACKGROUND_NAMES:
+        raise HTTPException(
+            400, f"background must be one of {', '.join(BACKGROUND_NAMES)}")
+    return text
+
+
 def _validate_rotate(rotate: float) -> float:
     """Degrees clockwise, any angle — the crop editor levels horizons by hand. Folded
     into [0, 360) and rounded to a tenth so the render key stays stable."""
@@ -376,6 +391,7 @@ async def _render_and_store(
     dither: str | None,
     rotate: float = 0.0,
     crop: list[float] | None = None,
+    background: str | None = None,
     show: bool,
     wait: bool,
     store: bool,
@@ -390,16 +406,17 @@ async def _render_and_store(
     # prefs.dither, not settings.dither_mode: the stored pref is what Home Assistant
     # edits, and the render must use exactly what we report back.
     effective_dither = (dither or prefs.dither).upper()
+    effective_bg = background or prefs.background
     canvas = working_canvas(display.size, orientation)
     crop = crop or default_crop(rotated_size(image.size, rotate), canvas, fit)
     if show:
         rendered = await display.show_image(
             image, fit=fit, orientation=orientation, wait=wait, mode=effective_dither,
-            rotate=rotate, crop=crop, coalesce=coalesce)
+            rotate=rotate, crop=crop, background=effective_bg, coalesce=coalesce)
     else:
         rendered = await display.render_preview(
             image, fit=fit, orientation=orientation, mode=effective_dither,
-            rotate=rotate, crop=crop)
+            rotate=rotate, crop=crop, background=effective_bg)
 
     body = {
         "rendered": True,
@@ -409,6 +426,7 @@ async def _render_and_store(
         "orientation": orientation,
         "rotate": rotate,
         "dither": effective_dither,
+        "background": effective_bg,
         "preview": "/display/preview",
     }
     if show:
@@ -427,7 +445,7 @@ async def _render_and_store(
             render = await asyncio.to_thread(
                 library.record_render, entry.id, rendered,
                 fit=fit, crop=crop, rotate=rotate, orientation=orientation,
-                dither=effective_dither, shown=show,
+                dither=effective_dither, background=effective_bg, shown=show,
             )
             body["photo"] = _photo_public(entry)
             body["render"] = render.public(entry.id) if render else None
@@ -447,6 +465,7 @@ async def _render_stored(
     dither: str | None = None,
     rotate: float | None = None,
     crop: list[float] | None = None,
+    background: str | None = None,
     show: bool = True,
     wait: bool = False,
     coalesce: bool = False,
@@ -458,8 +477,8 @@ async def _render_stored(
     survive a panel swap. Where the unspecified parameters come from is a deliberate
     split — **geometry follows the frame, look follows the photo.** fit and orientation
     come from the device prefs, because they describe how the frame hangs *now*;
-    dither and rotation come from the photo's most recent render, because those were
-    explicit choices about this picture."""
+    dither, background and rotation come from the photo's most recent render, because
+    those were explicit choices about this picture."""
     data = await asyncio.to_thread(library.read_original, entry.id)
     if data is None:
         raise HTTPException(410, f"The original for {entry.id!r} is gone from disk")
@@ -469,6 +488,7 @@ async def _render_stored(
     if rotate is None:
         rotate = last.rotate if last else 0
     effective_dither = (dither or (last.dither if last else None) or prefs.dither).upper()
+    effective_bg = background or (last.background if last else None) or prefs.background
     try:  # a stored mode can go stale if epaper-dithering drops one
         resolve_dither_mode(effective_dither)
     except ValueError:
@@ -491,15 +511,16 @@ async def _render_stored(
     if show:
         rendered = await display.show_image(
             image, fit=fit, orientation=orientation, wait=wait, mode=effective_dither,
-            rotate=rotate, crop=crop, coalesce=coalesce)
+            rotate=rotate, crop=crop, background=effective_bg, coalesce=coalesce)
     else:
         rendered = await display.render_preview(
             image, fit=fit, orientation=orientation, mode=effective_dither,
-            rotate=rotate, crop=crop)
+            rotate=rotate, crop=crop, background=effective_bg)
 
     render = await asyncio.to_thread(
         library.record_render, entry.id, rendered, fit=fit_mode, crop=crop,
-        rotate=rotate, orientation=orientation, dither=effective_dither, shown=show,
+        rotate=rotate, orientation=orientation, dither=effective_dither,
+        background=effective_bg, shown=show,
     )
     body = {
         "rendered": True,
@@ -512,6 +533,7 @@ async def _render_stored(
         "source": list(source),
         "canvas": list(canvas),
         "dither": effective_dither,
+        "background": effective_bg,
         "preview": "/display/preview",
         "photo": _photo_public(entry),
         "render": render.public(entry.id) if render else None,
@@ -736,6 +758,12 @@ async def display_image(
         description="Dithering algorithm for this request (case-insensitive); "
         "defaults to the device setting. GET /status lists the available names.",
     ),
+    background: str | None = Query(
+        None,
+        description="What fills the canvas where the photo doesn't reach — the margin "
+        "`contain` leaves and the corners a free rotation exposes. One of the panel's "
+        "six colours (GET /status lists them); defaults to the device setting.",
+    ),
     wait: bool | None = Query(None, description="Block until the ~30s refresh finishes"),
     show: bool = Query(True, description="Set false to only render a preview, no refresh"),
     store: bool | None = Query(
@@ -755,6 +783,7 @@ async def display_image(
         orientation=orientation,
         dither=dither,
         rotate=_validate_rotate(rotate),
+        background=_validate_background(background),
         show=show,
         wait=_resolve_wait(wait),
         store=show if store is None else store,
@@ -769,6 +798,7 @@ async def display_url(
     fit: str | None = Query(None, pattern="^(auto|cover|contain)$"),
     orientation: str | None = Query(None, pattern="^(landscape|portrait)$"),
     dither: str | None = Query(None),
+    background: str | None = Query(None),
     wait: bool | None = Query(None),
     show: bool = Query(True),
     store: bool | None = Query(None),
@@ -791,6 +821,7 @@ async def display_url(
         fit=fit,
         orientation=orientation,
         dither=dither,
+        background=_validate_background(background),
         show=show,
         wait=_resolve_wait(wait),
         store=show if store is None else store,
@@ -814,6 +845,7 @@ async def display_library_photo(
     crop: str | None = Query(None, description="x,y,w,h of the rotated photo to place"),
     dither: str | None = Query(
         None, description="Re-dither this photo with a different algorithm"),
+    background: str | None = Query(None, description="One of the panel's six colours"),
     wait: bool | None = Query(None),
     show: bool = Query(True, description="Set false to render a preview only"),
 ):
@@ -824,6 +856,7 @@ async def display_library_photo(
         return await _show_existing_render(entry, render, wait=_resolve_wait(wait))
     return await _render_stored(
         entry, fit=fit, orientation=orientation, dither=dither,
+        background=_validate_background(background),
         rotate=None if rotate is None else _validate_rotate(rotate),
         crop=_parse_crop(crop),
         show=show, wait=_resolve_wait(wait),
@@ -841,6 +874,7 @@ async def library_render(
         "pixels. It may extend past the edges — that is how 'contain' and every "
         "position between the presets are expressed. Omit it and `fit` picks one."),
     dither: str | None = Query(None),
+    background: str | None = Query(None, description="One of the panel's six colours"),
     show: bool = Query(False, description="Also put it on the panel"),
     wait: bool | None = Query(None),
 ):
@@ -851,6 +885,7 @@ async def library_render(
     entry = _require_entry(photo_id)
     return await _render_stored(
         entry, fit=fit, orientation=orientation, dither=dither,
+        background=_validate_background(background),
         rotate=None if rotate is None else _validate_rotate(rotate),
         crop=_parse_crop(crop),
         show=show, wait=_resolve_wait(wait),
@@ -1041,6 +1076,54 @@ async def library_render_file(photo_id: str, key: str):
     return _library_file(photo_id, "render", key)
 
 
+@app.get("/library/{photo_id}/renders/{key}/source")
+async def library_render_source(photo_id: str, key: str):
+    """The same picture as the render next door, WITHOUT the dithering.
+
+    This is what the gallery shows while you press and hold to compare, and it only
+    means anything if the two differ in *nothing else*: same rotation, same crop, same
+    canvas, same background, same orientation — so it is rebuilt from the archived
+    original through `place_on_canvas()`, the exact geometry half of the render
+    pipeline. Handing back `/original` instead (which is what this used to do) showed
+    a differently framed photo and answered a question nobody asked.
+
+    Built on demand rather than stored: it costs a fraction of a render, and keeping a
+    full-size RGB twin of every render would roughly triple the library on disk.
+    """
+    entry = _require_entry(photo_id)
+    render = library.get_render(photo_id, key)
+    if render is None:
+        raise HTTPException(404, f"No render {key!r} for photo {photo_id!r}")
+    data = await asyncio.to_thread(library.read_original, entry.id)
+    if data is None:
+        raise HTTPException(410, f"The original for {entry.id!r} is gone from disk")
+    image = _decode_image(data)
+
+    def _compose() -> bytes:
+        rgb = place_on_canvas(
+            image,
+            size=display.size,
+            orientation=render.orientation,
+            rotate=render.rotate,
+            crop=list(render.crop) if render.crop else None,
+            background=render.background,
+        )
+        # The render is the panel BUFFER, so match it: a portrait layout is transposed
+        # into the panel's landscape frame. Both images then line up pixel for pixel.
+        if render.orientation == "portrait":
+            rgb = rgb.transpose(Image.ROTATE_90)
+        buf = io.BytesIO()
+        rgb.save(buf, format="JPEG", quality=88)
+        return buf.getvalue()
+
+    return Response(
+        await asyncio.to_thread(_compose),
+        media_type="image/jpeg",
+        # Immutable: the key pins every parameter that went into it.
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.get("/library/{photo_id}/renders/{key}/thumb")
 async def library_render_thumb(photo_id: str, key: str):
     return _library_file(photo_id, "thumb", key)
@@ -1139,6 +1222,7 @@ async def get_prefs():
             "orientation": list(ORIENTATIONS),
             "fit": list(FIT_MODES),
             "dither": list(AVAILABLE_DITHER_MODES),
+            "background": list(BACKGROUND_NAMES),
             "auto_fit_max_crop": {"min": 0.0, "max": 1.0},
         },
         "path": str(prefs.path),

@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # panel: 4:3 (0%), 3:2 (11%) and 16:9 (25%) get cover; a portrait 3:4 photo (44%)
     # and a 2:1 panorama (33%) get contain.
     auto_fit_max_crop: float = 0.30
+    # What fills the canvas where the photo doesn't reach — the margin `contain`
+    # leaves and the corners a free rotation exposes. One of the panel's six colours:
+    # white | black | red | green | blue | yellow. Only these, because a palette colour
+    # dithers to a flat block while anything else becomes a stipple.
+    default_background: str = "white"
 
     # --- Absolute URL other machines use to reach this service ---
     # Baked into the Home Assistant MQTT `image` entity so HA can fetch the current

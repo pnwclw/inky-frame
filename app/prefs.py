@@ -18,6 +18,9 @@ how the frame ended up hanging and what the owner likes:
                        cover (fill + crop), contain (pad white), or auto.
     auto_fit_max_crop  the threshold `auto` uses (see below).
     dither             default dithering algorithm.
+    background         what fills the canvas where the photo doesn't reach — the
+                       margin `contain` leaves and the corners a free rotation
+                       exposes. One of the panel's six colours.
 
 **`fit=auto`** is the interesting one, and the reason this file exists. `cover` looks
 best — a photo edge to edge — but only while the aspect ratios are close: forcing a
@@ -42,7 +45,11 @@ from pathlib import Path
 from typing import Callable
 
 from .config import Settings
-from .dithering import AVAILABLE_DITHER_MODES, crop_loss
+from .dithering import (
+    AVAILABLE_DITHER_MODES,
+    BACKGROUND_NAMES,
+    crop_loss,
+)
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +72,7 @@ class Prefs:
         self.fit: str = settings.default_fit
         self.auto_fit_max_crop: float = settings.auto_fit_max_crop
         self.dither: str = settings.dither_mode.upper()
+        self.background: str = settings.default_background
         self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -95,6 +103,7 @@ class Prefs:
             "fit": self.fit,
             "auto_fit_max_crop": self.auto_fit_max_crop,
             "dither": self.dither,
+            "background": self.background,
         }
 
     def resolve_fit(
@@ -143,11 +152,12 @@ class Prefs:
         is what loading a prefs.json written by another version needs."""
         staged: dict = {}
         for key, value in changes.items():
-            if key not in ("orientation", "fit", "auto_fit_max_crop", "dither"):
+            if key not in ("orientation", "fit", "auto_fit_max_crop", "dither",
+                           "background"):
                 if strict:
                     raise ValueError(
                         f"Unknown pref {key!r}. Valid: orientation, fit, "
-                        f"auto_fit_max_crop, dither"
+                        f"auto_fit_max_crop, dither, background"
                     )
                 continue
             staged[key] = _validate(key, value)
@@ -170,6 +180,11 @@ def _validate(key: str, value):
         text = str(value).strip().upper()
         if text not in AVAILABLE_DITHER_MODES:
             raise ValueError(f"dither must be one of {', '.join(AVAILABLE_DITHER_MODES)}")
+        return text
+    if key == "background":
+        text = str(value).strip().lower()
+        if text not in BACKGROUND_NAMES:
+            raise ValueError(f"background must be one of {', '.join(BACKGROUND_NAMES)}")
         return text
     if key == "auto_fit_max_crop":
         try:

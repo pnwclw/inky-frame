@@ -61,6 +61,13 @@ POST {{host}}/library/20260101-120000-deadbeef/render?fit=cover&rotate=90&dither
 ### exposes come out white.
 POST {{host}}/library/20260101-120000-deadbeef/render?rotate=6.4&dither=ATKINSON
 
+### What fills the empty space — the margin a fitted photo leaves and the corners a
+### rotation exposes. Only the panel's six colours; anything else -> 400.
+POST {{host}}/library/20260101-120000-deadbeef/render?rotate=6.4&background=black
+
+### The same framing WITHOUT the dithering — what press-and-hold compares against.
+GET {{host}}/library/20260101-120000-deadbeef/renders/a440b17b51/source
+
 ### ...or place an explicit rectangle, which is what the crop editor sends. x,y,w,h in
 ### pixels of the ROTATED photo; it may extend past the edges (that becomes white).
 POST {{host}}/library/20260101-120000-deadbeef/render?crop=120,0,1600,1200&dither=ATKINSON
