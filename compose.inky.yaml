@@ -1,0 +1,31 @@
+# Inky Impression frame service (7.3" or 13.3" — pick via PANEL in .env; default 7.3").
+# Lives WITH the code (synced by mutagen) and is pulled into the host's shared
+# stack via an `include:` in ~/services/docker-compose.yaml. Deploy changes with:
+#   cd ~/services && docker compose up -d --build inky-frame
+services:
+  inky-frame:
+    build: .
+    container_name: inky-frame
+    restart: unless-stopped
+    network_mode: host            # matches the other services; app on :8080,
+                                  # reaches mosquitto at localhost:1883
+    env_file: .env
+    environment:
+      TZ: Europe/Warsaw
+    volumes:
+      - ./data:/data              # rendered previews / mock output (Pi-only, not synced)
+
+    # --- Panel hardware (LIVE) ------------------------------------------------
+    # SPI + I2C enabled on the host and the panel is wired, so the service drives
+    # the real panel (INKY_MOCK=0 in .env). REQUIRED host config: dtoverlay=spi0-0cs
+    # in /boot/firmware/config.txt — inky drives the SPI chip-select via gpiod, so
+    # the kernel must not hold it (CLAUDE.md §7 step 1b). That overlay also REMOVES
+    # /dev/spidev0.1, so it must NOT be mapped here or the container won't start
+    # (both panels manage CS via gpiod now, so neither needs it). spidev.bufsiz is
+    # left unset per the host owner; if a refresh hangs/errors mid-transfer, add
+    # spidev.bufsiz=65536 to /boot/firmware/cmdline.txt (§7, §12).
+    devices:
+      - "/dev/spidev0.0:/dev/spidev0.0"   # display data (CS driven via gpiod under spi0-0cs)
+      # - "/dev/spidev0.1:/dev/spidev0.1" # gone under spi0-0cs; do not map (missing device = no start)
+      - "/dev/i2c-1:/dev/i2c-1"           # on-board EEPROM (auto-detect)
+      - "/dev/gpiochip0:/dev/gpiochip0"   # buttons + display control lines

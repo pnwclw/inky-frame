@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Inky Frame",
+        "description": "Where does the frame service answer? Home Assistant and the frame usually run on the same Pi, so the defaults are normally right.",
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the frame service at that address.",
+      "not_a_frame": "That address answered, but it is not an Inky Frame service (no device id in /status)."
+    },
+    "abort": {
+      "already_configured": "This frame is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Inky Frame panel",
+        "description": "Address a BROWSER can reach the frame's gallery on. Use the https:// address when Home Assistant is served over HTTPS, or the browser will block the panel as mixed content. Leave empty to hide the panel's contents.",
+        "data": {
+          "gallery_url": "Gallery URL"
+        }
+      }
+    }
+  }
+}

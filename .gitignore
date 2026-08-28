@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# uv
+# (keep uv.lock committed for reproducible builds)
+
+# Runtime data / rendered previews
+/data/*
+!/data/.gitkeep
+
+# Secrets
+.env
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

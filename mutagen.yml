@@ -1,0 +1,24 @@
+# Real-time code sync: this Mac repo  ->  the Pi's ~/services/inky-frame-dashboard.
+# Start once with:  mutagen project start   (from this directory)
+# Then just save files — mutagen mirrors them to the Pi within ~1s. Deploy with:
+#   ssh inky-pi 'cd ~/services && docker compose up -d --build inky-frame'
+#
+# `inky-pi` is a Host alias in ~/.ssh/config using the dedicated key ~/.ssh/id_home_pi.
+sync:
+  defaults:
+    # Mac is the source of truth; the Pi folder is an exact mirror of it.
+    mode: "one-way-replica"
+    ignore:
+      vcs: true                 # .git, etc.
+      paths:
+        - ".venv"               # macOS-built venv — the image builds its own arm64 one
+        - "data"                # Pi-only runtime output (previews / mock renders)
+        - ".env"                # Pi-only secrets (MQTT creds), created on the Pi
+        - ".idea"
+        - ".ruff_cache"
+        - "__pycache__"
+        - "*.pyc"
+        - ".DS_Store"
+  inky:
+    alpha: "."
+    beta: "inky-pi:/home/raspberrypi/services/inky-frame-dashboard"

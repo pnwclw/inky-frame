@@ -1,0 +1,122 @@
+# Inky Frame API — scratch requests (JetBrains HTTP client).
+# Set host to your Pi.
+@host = http://inky-frame.local:8080
+
+### Liveness
+GET {{host}}/healthz
+
+### Status (driver, busy, last error, MQTT connection)
+GET {{host}}/status
+
+### Send a photo (raw body) and show it. This is what the iOS Shortcut does.
+POST {{host}}/display/image
+Content-Type: image/jpeg
+
+< ./data/sample.jpg
+
+### Render only (no panel refresh) — tune dithering, then fetch the preview
+POST {{host}}/display/image?show=false&fit=contain
+Content-Type: image/jpeg
+
+< ./data/sample.jpg
+
+### Fetch the last rendered image
+GET {{host}}/display/preview
+
+### Block until the refresh finishes (~30s)
+POST {{host}}/display/image?wait=true
+Content-Type: image/jpeg
+
+< ./data/sample.jpg
+
+### Blank the panel
+POST {{host}}/display/clear
+
+### Guest Wi-Fi dashboard (the only dashboard; pre-composed, shown with dither=NONE)
+POST {{host}}/display/dashboard?name=guest_wifi
+
+### --- Photo library (photos, their renders, collections) --------------------
+
+### Upload WITHOUT rendering or showing (what the gallery's + button does)
+POST {{host}}/library?name=Sunset
+Content-Type: image/jpeg
+
+< ./data/sample.jpg
+
+### Index. Each entry lists every render made from it.
+GET {{host}}/library?limit=20
+
+### One photo
+GET {{host}}/library/20260101-120000-deadbeef
+
+### Its files
+GET {{host}}/library/20260101-120000-deadbeef/thumb
+GET {{host}}/library/20260101-120000-deadbeef/original
+
+### Make (or reuse) a render — the key is a hash of these parameters
+POST {{host}}/library/20260101-120000-deadbeef/render?fit=cover&rotate=90&dither=ATKINSON
+
+### ...or place an explicit rectangle, which is what the crop editor sends. x,y,w,h in
+### pixels of the ROTATED photo; it may extend past the edges (that becomes white).
+POST {{host}}/library/20260101-120000-deadbeef/render?crop=120,0,1600,1200&dither=ATKINSON
+
+### That render, and its thumbnail
+GET {{host}}/library/20260101-120000-deadbeef/renders/abc1234567
+GET {{host}}/library/20260101-120000-deadbeef/renders/abc1234567/thumb
+
+### Put a saved render back on the panel verbatim — nothing is recomputed
+POST {{host}}/display/library/20260101-120000-deadbeef?render=abc1234567
+
+### ...or render it afresh with the current settings
+POST {{host}}/display/library/20260101-120000-deadbeef
+
+### Step through the library (reuses each photo's latest render)
+POST {{host}}/display/nav?direction=next
+
+### Fetch an image by URL and show it
+POST {{host}}/display/url?url=http://homeassistant.local:8123/media/local/photo.jpg
+
+### Drop one render, keep the photo
+DELETE {{host}}/library/20260101-120000-deadbeef/renders/abc1234567
+
+### Forget a photo entirely (original, thumb and every render)
+DELETE {{host}}/library/20260101-120000-deadbeef
+
+### --- Collections (a photo can be in several) --------------------------------
+
+GET {{host}}/collections
+
+### Create one
+POST {{host}}/collections
+Content-Type: application/json
+
+{"name": "Guests"}
+
+### Only the photos in it
+GET {{host}}/library?collection=c-1a2b3c4d
+
+### Set which collections a photo is in (the full set, like a row of checkboxes)
+PATCH {{host}}/library/20260101-120000-deadbeef
+Content-Type: application/json
+
+{"name": "Sunset over the lake", "collections": ["c-1a2b3c4d"]}
+
+### Delete a collection — the photos stay in the library
+DELETE {{host}}/collections/c-1a2b3c4d
+
+### --- Device settings (also editable from Home Assistant) --------------------
+
+### Current settings + their valid values
+GET {{host}}/prefs
+
+### The frame now hangs vertically (also re-shows the current photo)
+PATCH {{host}}/prefs
+Content-Type: application/json
+
+{"orientation": "portrait"}
+
+### Only crop when cover throws away less than 20% of the photo
+PATCH {{host}}/prefs
+Content-Type: application/json
+
+{"fit": "auto", "auto_fit_max_crop": 0.2}

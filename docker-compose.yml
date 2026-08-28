@@ -1,0 +1,30 @@
+# Raspberry Pi 5 + Inky Impression (7.3" or 13.3" — pick via PANEL in .env).
+# Connects to your existing Home Assistant / Mosquitto broker (set MQTT_* in .env).
+# LAN-only, no auth.
+#
+# Prereqs on the host (see CLAUDE.md "Raspberry Pi host setup"):
+#   * SPI + I2C enabled in /boot/firmware/config.txt
+#   * spidev.bufsiz=65536 in /boot/firmware/cmdline.txt (needed for the big 13.3"
+#     transfers; harmless for the 7.3")
+#   * confirm the gpiochip name with `ls -l /dev/gpiochip*` (Pi 5 Bookworm = gpiochip0)
+# All device nodes below are mapped for BOTH panels, so switching is just PANEL in
+# .env + a restart — no compose edit needed.
+services:
+  inky-frame:
+    build: .
+    container_name: inky-frame
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"          # LAN only; do not forward this port from your router
+    volumes:
+      - ./data:/data         # rendered previews / mock output
+    devices:
+      - "/dev/spidev0.0:/dev/spidev0.0"   # display data
+      # - "/dev/spidev0.1:/dev/spidev0.1"   # second chip-select — 13.3" only (unused by 7.3")
+      - "/dev/i2c-1:/dev/i2c-1"           # on-board EEPROM (auto-detect)
+      - "/dev/gpiochip0:/dev/gpiochip0"   # buttons + display control lines (Pi 5)
+      # - "/dev/gpiochip4:/dev/gpiochip4" # older Pi 5 kernels named the header chip this way
+    # The container runs as root, so the mapped /dev nodes are accessible without
+    # group_add. If you still hit permission errors, the blunt fallback is:
+    # privileged: true

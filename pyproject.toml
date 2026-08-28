@@ -1,0 +1,34 @@
+[project]
+name = "inky-frame-dashboard"
+version = "0.1.0"
+description = "API service for an Inky Impression e-paper frame (7.3\" or 13.3\", selectable): receive images from iOS Shortcuts, dither them, display them, and bridge the panel buttons to MQTT / Home Assistant."
+readme = "README.md"
+requires-python = ">=3.11"            # epaper-dithering needs >= 3.11
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",        # multipart/form-data uploads
+    "pillow>=10.2",
+    "epaper-dithering>=0.1",          # Rust-accelerated dithering (OpenDisplay)
+    "paho-mqtt>=2.0",
+    "pydantic-settings>=2.2",
+    "qrcode>=8.2",
+]
+
+# Hardware-only deps. These are Linux/Raspberry-Pi specific (gpiod won't build on
+# macOS) so they live in a separate group that is installed ONLY in the Docker
+# image. On a dev laptop run `uv sync` (no hardware group) + INKY_MOCK=1.
+[dependency-groups]
+hardware = [
+    "inky>=2.4.0",                    # needs EL133UF1 (13.3") + E673 (7.3" Spectra) drivers
+]
+dev = [
+    "httpx>=0.28.1",
+    "ruff>=0.4",
+]
+
+[tool.uv]
+package = false                       # this is an application, not an importable library
+
+[tool.ruff]
+line-length = 110
